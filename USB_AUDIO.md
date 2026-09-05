@@ -2,8 +2,11 @@
 
 The board is a USB Audio Class 1.0 playback device: the host sends 384 kHz
 32-bit stereo over a high-speed isochronous endpoint, and it comes out of the
-PCM5102A over I2S.  When nothing is streaming, a 1 kHz test tone plays instead,
-so an idle board still proves it is alive.
+PCM5102A over I2S.  With nothing streaming the DAC is fed silence -- the bit
+clock and word clock keep running, so the converter stays locked and there is
+no thump when audio resumes.  `IDLE_TONE` on `ts2_top` puts a 1 kHz sine there
+instead, which is how the audio path was brought up before there was any USB
+to play through it.
 
 **This works.**  The device enumerates as `1209:0001 TS2 USB Audio`, ALSA picks
 it up as a **high speed** USB-Audio card at `s32le 2ch 384000Hz`, and the top
@@ -152,7 +155,7 @@ everything that had only ever been exercised at one byte per forty clocks.
 
 ## Resource usage
 
-3,263 of 6,272 logic elements (52%), 92 kbit of 276 kbit of memory (33%), one
+3,252 of 6,272 logic elements (52%), 88 kbit of 276 kbit of memory (32%), one
 of two PLLs, no multipliers.  Roughly a third of that is debug scaffolding:
 the JTAG hub and probe, the ULPI bus capture and its 28 kbit buffer, the UART
 and the status frame builder.  `DEBUG => false` on `ts2_top` drops the JTAG
@@ -166,7 +169,7 @@ monitor; the capture and trace in `usb_top.vhd` would have to go by hand.
 | `ulpi_capture` *(debug)* | 77 | 28 kbit |
 | JTAG hub + probe + `i2s_monitor` *(debug)* | ~470 | |
 | `i2s_master` | 55 | |
-| `tone_gen` + sine ROM | 24 | 4 kbit |
+| `tone_gen` + sine ROM *(only with `IDLE_TONE`)* | 24 | 4 kbit |
 | `uart_tx` *(debug)* | 39 | |
 | `led_blink` | 46 | |
 

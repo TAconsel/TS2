@@ -20,6 +20,9 @@ INC, PB = 43694, 24
 # the generics on ts2_top.
 SLOT_BITS, DATA_BITS, LEFT_JUSTIFIED = 32, 24, False
 DELAY = 0 if LEFT_JUSTIFIED else 1
+# ts2_top's IDLE_TONE.  With it off the board is silent unless USB audio is
+# playing, so the tone and sine-table columns are not checks.
+TONE_EXPECTED = False
 FRAME_BITS = 2 * SLOT_BITS
 PROBE_BITS = 1 + FRAME_BITS + 32 + 19 + 11
 N, AMP, ATTEN = 256, 32767, 1
@@ -68,12 +71,21 @@ for line in open(sys.argv[1]):
           (i, lock, fs, tone, lval, rval, lval == rval, onlut,
            "clean" if framing else "BAD"))
     rows += 1
-    if not (lock == '1' and fs in FS_OK and tone in (999, 1000, 1001)
-            and lval == rval and framing and onlut):
+    # The tone columns only mean anything when the board is generating the
+    # test tone; with IDLE_TONE off, or while USB audio is playing, the
+    # signal is not the sine table and only the clock and framing are checks.
+    if not (lock == '1' and fs in FS_OK and framing):
+        ok = False
+    if TONE_EXPECTED and not (tone in (999, 1000, 1001)
+                              and lval == rval and onlut):
         ok = False
 
 print()
 print("expected  Fs = %.4f Hz (%+.0f ppm vs 384000) -> counts as %s"
       % (FS, (float(FS) - 384000) / 384000 * 1e6, sorted(FS_OK)))
-print("expected tone = %.4f Hz -> counts as 1000" % TONE_HZ)
+if not TONE_EXPECTED:
+    print("tone columns are not checked: ts2_top IDLE_TONE is off, so the "
+          "board\n              is silent unless USB audio is playing")
+if TONE_EXPECTED:
+    print("expected tone = %.4f Hz -> counts as 1000" % TONE_HZ)
 print("reads: %d   all consistent: %s" % (rows, ok))

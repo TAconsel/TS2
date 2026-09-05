@@ -2,9 +2,14 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use IEEE.NUMERIC_STD.ALL;
 
--- Top level: a USB audio device feeding a PCM5102(A) over I2S, falling back to
--- a 1 kHz sine test tone whenever nothing is playing, plus the original
--- blinking LED kept as an "FPGA is configured" indicator.
+-- Top level: a USB audio device feeding a PCM5102(A) over I2S, plus the
+-- original blinking LED kept as an "FPGA is configured" indicator.
+--
+-- With nothing streaming the DAC is fed silence.  The bit clock and word clock
+-- keep running, so the converter stays locked and there is no thump when audio
+-- resumes -- only the data goes to zero.  A 1 kHz test tone can be put there
+-- instead by setting IDLE_TONE, which is how the audio path was brought up
+-- before there was any USB to play through it.
 --
 -- The stream is 384 kHz, 32-bit, stereo, which needs USB high speed: at
 -- 3.07 MB/s it does not fit a full-speed frame.  The device attaches at full
@@ -55,7 +60,11 @@ entity ts2_top is
         -- Philips I2S at twice the bit clock.  See i2s_master.vhd.
         SLOT_BITS      : natural := 32;
         DATA_BITS      : natural := 24;
-        LEFT_JUSTIFIED : boolean := false
+        LEFT_JUSTIFIED : boolean := false;
+        -- Play a 1 kHz sine when nothing is streaming, rather than silence.
+        -- Useful for bringing the audio path up on its own; a nuisance
+        -- otherwise, since it is the DAC's output that has to sit and hum.
+        IDLE_TONE      : boolean := false
     );
     Port (
         clk      : in  STD_LOGIC;   -- 50 MHz
@@ -81,7 +90,8 @@ end ts2_top;
 
 architecture Behavioral of ts2_top is
 
-    signal tone_sample : signed(31 downto 0);
+    -- What the DAC is fed when the host is not streaming.
+    signal idle_sample : signed(31 downto 0);
     signal usb_l, usb_r : signed(31 downto 0);
     signal usb_active   : STD_LOGIC;
     signal play_l, play_r : signed(31 downto 0);
@@ -110,18 +120,23 @@ begin
             led => led
         );
 
-    tone : entity work.tone_gen
-        port map (
-            clk         => aclk,
-            sample_tick => frame_tick,
-            sample      => tone_sample
-        );
+    tone_on : if IDLE_TONE generate
+        tone : entity work.tone_gen
+            port map (
+                clk         => aclk,
+                sample_tick => frame_tick,
+                sample      => idle_sample
+            );
+    end generate;
 
-    -- USB audio when the host is streaming, the test tone otherwise, so the
-    -- board always says something and an unplugged cable is obvious.  The
-    -- source only changes at a packet boundary, never mid-frame.
-    play_l <= usb_l when usb_active = '1' else tone_sample;
-    play_r <= usb_r when usb_active = '1' else tone_sample;
+    tone_off : if not IDLE_TONE generate
+        idle_sample <= (others => '0');
+    end generate;
+
+    -- USB audio while the host is streaming, and whatever idle is otherwise.
+    -- The source only changes at a packet boundary, never mid-frame.
+    play_l <= usb_l when usb_active = '1' else idle_sample;
+    play_r <= usb_r when usb_active = '1' else idle_sample;
 
     i2s : entity work.i2s_master
         generic map (SLOT_BITS      => SLOT_BITS,

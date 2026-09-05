@@ -10,10 +10,11 @@ isochronous audio sink and an asynchronous feedback loop.
 `1209:0001 TS2 USB Audio` and ALSA opens it at `s32le 2ch 384000Hz`. The I2S
 framing is generic — 24-bit by default, which is what a PCM5102A accepts and
 all it can resolve; full 32-bit is one constant away for a DAC that wants it.
-When nothing is streaming, a 1 kHz test tone plays so an idle board still
-proves it is alive.
+With nothing streaming the DAC is fed silence, with the clocks still running so
+it stays locked; `IDLE_TONE` on `ts2_top` puts a 1 kHz test tone there instead
+for bring-up.
 
-Uses 52% of the logic and 33% of the memory on a 10CL006, about a third of
+Uses 52% of the logic and 32% of the memory on a 10CL006, about a third of
 that debug scaffolding.
 
 See **[USB_AUDIO.md](USB_AUDIO.md)** for the design, the debugging tools, and
