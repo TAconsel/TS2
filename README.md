@@ -6,10 +6,13 @@ and a full USB device stack in VHDL in between — ULPI bus master, serial
 interface engine, high-speed chirp negotiation, control endpoint, descriptors,
 isochronous audio sink and an asynchronous feedback loop.
 
-**USB high speed, 384 kHz, 32-bit stereo.** The host sees
-`1209:0001 TS2 USB Audio` and ALSA opens it at `s32le 2ch 384000Hz`. Samples
-reach the DAC bit-exact. When nothing is streaming, a 1 kHz test tone plays so
-an idle board still proves it is alive.
+**USB high speed, 384 kHz, 32-bit stereo**, with the full 32-bit word carried
+all the way to the I2S bus. The host sees `1209:0001 TS2 USB Audio` and ALSA
+opens it at `s32le 2ch 384000Hz`. When nothing is streaming, a 1 kHz test tone
+plays so an idle board still proves it is alive.
+
+Uses 56% of the logic and 36% of the memory on a 10CL006, about a third of
+that debug scaffolding.
 
 See **[USB_AUDIO.md](USB_AUDIO.md)** for the design, the debugging tools, and
 an account of what the bring-up turned up.
@@ -29,7 +32,7 @@ debug/usb_trace.py --follow    # live status over the board's CH340
 | --- | --- | --- |
 | FPGA_CLK | 91 | 50 MHz TCXO |
 | LED | 100 | |
-| PCM5102A DIN / LCK / BCK / SCK | 1 / 3 / 143 / 141 | SCK is held low: BCK-only mode |
+| PCM5102A DIN / LCK / BCK / SCK | 1 / 3 / 143 / 141 | SCK held low: BCK-only mode. BCK is 49.1 MHz — see `SLOT_BITS` in `ts2_top.vhd` to halve it |
 | USB3300 DATA0..7 | 31 32 33 34 38 39 42 43 | |
 | USB3300 STP / NXT / DIR / CLK / RST | 44 / 46 / 49 / 23 / 51 | CLK is a dedicated clock input |
 | FPGA_TX | 11 | debug trace, 1 Mbaud, on the on-board CH340 |

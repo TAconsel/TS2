@@ -14,18 +14,26 @@ import sys
 from fractions import Fraction
 
 # Must match audio_pll / i2s_master / tone_gen.
-FS = Fraction(50_000_000 * 173, 176 * 128)    # 383966.6193 Hz
+FS = Fraction(50_000_000 * 173, 88 * 256)     # 383966.6193 Hz
 INC, PB = 43694, 24
+# Bit clocks per channel, and how many of them carry the sample.  These follow
+# the generics on ts2_top.
+SLOT_BITS, DATA_BITS = 64, 32
+FRAME_BITS = 2 * SLOT_BITS
+PROBE_BITS = 1 + FRAME_BITS + 32 + 19 + 11
 N, AMP, ATTEN = 256, 32767, 1
 
 TABLE = [int(round(AMP * math.sin(2 * math.pi * i / N))) for i in range(N)]
-EXPECT = [((TABLE[i] >> ATTEN) << 8) & 0xFFFFFF for i in range(N)]
+# tone_gen puts the 16-bit table value in the top of a 32-bit word; the
+# transmitter then sends the top DATA_BITS of that.
+EXPECT = [(((TABLE[i] >> ATTEN) << 16) >> (32 - DATA_BITS)) & ((1 << DATA_BITS) - 1)
+          for i in range(N)]
 FS_OK = {int(FS), int(FS) + 1}                 # +-1 count of gate quantisation
 TONE_HZ = INC * float(FS) / 2 ** PB
 
 
-def s24(u):
-    return u - (1 << 24) if u & (1 << 23) else u
+def sdata(u):
+    return u - (1 << DATA_BITS) if u & (1 << (DATA_BITS - 1)) else u
 
 
 print("%-3s %-5s %-8s %-8s %-11s %-11s %-6s %-6s %s" %
@@ -37,16 +45,23 @@ for line in open(sys.argv[1]):
     if not m:
         continue
     i, b = m.group(1), m.group(2)
-    assert len(b) == 119, "probe width %d, expected 119" % len(b)
-    lock, snap, ref = b[0], b[1:65], b[65:89]
-    fs, tone = int(b[89:108], 2), int(b[108:], 2)
+    assert len(b) == PROBE_BITS, ("probe width %d, expected %d"
+                                  % (len(b), PROBE_BITS))
+    lock = b[0]
+    snap = b[1 : 1 + FRAME_BITS]
+    ref = b[1 + FRAME_BITS : 33 + FRAME_BITS]
+    fs = int(b[33 + FRAME_BITS : 52 + FRAME_BITS], 2)
+    tone = int(b[52 + FRAME_BITS :], 2)
 
-    lh, rh = snap[:32], snap[32:]
-    lu, ru = int(lh[1:25], 2), int(rh[1:25], 2)
-    lval, rval = s24(lu), s24(ru)
+    lh, rh = snap[:SLOT_BITS], snap[SLOT_BITS:]
+    # Slot bit 0 is the I2S delay, then DATA_BITS of sample, then zeros.
+    lu = int(lh[1 : 1 + DATA_BITS], 2)
+    ru = int(rh[1 : 1 + DATA_BITS], 2)
+    lval, rval = sdata(lu), sdata(ru)
     framing = (lh[0] == '0' and rh[0] == '0'
-               and set(lh[25:]) == {'0'} and set(rh[25:]) == {'0'})
-    onlut = lu in EXPECT and int(ref, 2) in EXPECT
+               and set(lh[1 + DATA_BITS:] or {'0'}) == {'0'}
+               and set(rh[1 + DATA_BITS:] or {'0'}) == {'0'})
+    onlut = lu in EXPECT and (int(ref, 2) >> (32 - DATA_BITS)) in EXPECT
 
     print("%-3s %-5s %-8d %-8d %-11d %-11d %-6s %-6s %s" %
           (i, lock, fs, tone, lval, rval, lval == rval, onlut,

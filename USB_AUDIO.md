@@ -6,13 +6,10 @@ PCM5102A over I2S.  When nothing is streaming, a 1 kHz test tone plays instead,
 so an idle board still proves it is alive.
 
 **This works.**  The device enumerates as `1209:0001 TS2 USB Audio`, ALSA picks
-it up as a **high speed** USB-Audio card at `s32le 2ch 384000Hz`, and samples
-arrive at the DAC bit-exact: writing +0x20000000 to the left channel and
--0x20000000 to the right produces exactly +0x200000 and -0x200000 in the I2S
-stream, which is the top 24 bits of each.  Sustained playback runs with zero
-dropped packets and zero FIFO overflows, one isochronous packet per 125 us
-microframe, and the feedback loop holding between 47.99 and 48.08 samples per
-microframe.
+it up as a **high speed** USB-Audio card at `s32le 2ch 384000Hz`, and the full
+32-bit sample reaches the I2S bus.  Sustained playback runs with zero dropped
+packets and zero FIFO overflows, one isochronous packet per 125 us microframe,
+and the feedback loop holding around 48.05 samples per microframe.
 
 ## Layout
 
@@ -73,16 +70,30 @@ High speed also means the datapath runs at one byte per 60 MHz clock in both
 directions, sustained, rather than one byte per forty.  Two of the bugs below
 are entirely about that.
 
-**32-bit over USB, 24 bits to the DAC.**  A 32-bit word does not fit an I2S
-slot at 64 x Fs: one of the 32 bit times is spent on the format's one-bit
-delay.  The top 24 bits go to the converter, and nothing is lost that it could
-reproduce -- the PCM5102A's dynamic range is 112 dB, about 19 bits, so bits
-below the 24th are some 30 dB under its own noise floor.
+**A full 32-bit word to the DAC, which costs a 128 x Fs frame.**  Philips I2S
+spends the first bit time of each slot on the format's one-clock delay, so a
+32-bit word will not fit a 32-bit slot: at 64 x Fs the most that fits is 31
+bits, and the sensible word length is 24.  Sending all 32 means 64 bit clocks
+per channel, so BCK is 128 x Fs = 49.1 MHz and the transmitter's clock is
+256 x Fs = 98.3 MHz.
 
-**SCK is grounded.**  The PCM5102A wants its master clock at 256 x Fs, which
-at 384 kHz is 98.3 MHz: beyond what this part will generate cleanly and well
-beyond what a jumper wire will carry.  Holding SCK low puts the DAC in BCK-only
-mode, where its own PLL derives the system clock from the 24.6 MHz bit clock.
+Both the word length and the frame size are generics on `ts2_top`, passed to
+`i2s_master` and the JTAG monitor together:
+
+| `SLOT_BITS` / `DATA_BITS` | frame | BCK at 384 kHz | |
+| --- | --- | --- | --- |
+| 64 / 32 | 128 x Fs | 49.1 MHz | full 32-bit (default) |
+| 32 / 24 | 64 x Fs | 24.6 MHz | what a PCM5102A wants |
+
+The PCM5102A itself resolves about 19 bits -- 112 dB of dynamic range -- so
+bits below the 24th are some 30 dB under its own noise floor and 32-bit output
+buys it nothing.  It is there for a converter that can use it.  **If the DAC
+will not lock to a 49 MHz bit clock, change the generics to 32 / 24 and the
+bit clock halves.**
+
+**SCK is grounded.**  The PCM5102A wants its master clock at 256 x Fs, which at
+384 kHz would be another 98.3 MHz pin.  Holding SCK low puts the part in
+BCK-only mode, where its own PLL derives the system clock from BCK.
 
 **Asynchronous, with feedback.**  The board's audio clock is 383966.62 Hz --
 the closest the PLL reaches from a 50 MHz reference, since the ratio wanted is
@@ -134,6 +145,26 @@ everything that had only ever been exercised at one byte per forty clocks.
 * **The Fs counter in the JTAG monitor was 17 bits.**  384 kHz needs 19.  It
   wrapped and reported 121823 Hz, which is wrong in a thoroughly plausible way
   -- the sort of number one might spend an afternoon explaining.
+
+## Resource usage
+
+3,510 of 6,272 logic elements (56%), 100 kbit of 276 kbit of memory (36%), one
+of two PLLs, no multipliers.  Roughly a third of that is debug scaffolding:
+the JTAG hub and probe, the ULPI bus capture and its 28 kbit buffer, the UART
+and the status frame builder.  `DEBUG => false` on `ts2_top` drops the JTAG
+monitor; the capture and trace in `usb_top.vhd` would have to go by hand.
+
+| | LE | memory |
+| --- | ---: | ---: |
+| `usb_device` (ULPI master, SIE, PHY setup, chirp) | 903 | 2 kbit |
+| `usb_top` glue: clock search, status frame, snapshot | ~614 | |
+| `usb_audio` incl. the dual-clock FIFO | 231 | 49 kbit |
+| `ulpi_capture` *(debug)* | 77 | 28 kbit |
+| JTAG hub + probe + `i2s_monitor` *(debug)* | ~470 | |
+| `i2s_master` | 55 | |
+| `tone_gen` + sine ROM | 24 | 4 kbit |
+| `uart_tx` *(debug)* | 39 | |
+| `led_blink` | 46 | |
 
 ## What the first bring-up turned up
 

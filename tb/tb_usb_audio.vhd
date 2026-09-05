@@ -6,7 +6,7 @@ use STD.TEXTIO.all;
 -- Testbench for usb_audio: the byte stream from the SIE in one clock domain,
 -- I2S samples out in another, and the feedback loop in between.
 --
--- Both clocks are the real ones -- 60 MHz for ULPI and 49.147727 MHz for the
+-- Both clocks are the real ones -- 60 MHz for ULPI and 98.295455 MHz for the
 -- audio side -- so the crossing is exercised at its actual ratio rather than
 -- at some convenient integer one.  Bytes arrive one per clock, which is what
 -- high speed actually delivers and the hardest case for the packer.  Sample values are made distinguishable per
@@ -19,9 +19,9 @@ end tb_usb_audio;
 architecture sim of tb_usb_audio is
 
     constant USB_PERIOD : time := 16.667 ns;    -- 60 MHz
-    constant A_PERIOD   : time := 20.347 ns;    -- 49.147727 MHz
-    -- The I2S master ticks once per 128 audio clocks.
-    constant FRAME_DIV  : natural := 128;
+    constant A_PERIOD   : time := 10.173 ns;    -- 98.295455 MHz
+    -- The I2S master ticks once per 256 audio clocks.
+    constant FRAME_DIV  : natural := 256;
 
     signal usb_clk : STD_LOGIC := '0';
     signal aclk    : STD_LOGIC := '0';

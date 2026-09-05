@@ -1,18 +1,20 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 
--- 50 MHz -> 49.147727 MHz, the audio clock for 384 kHz.
+-- 50 MHz -> 98.295455 MHz, the audio clock for 384 kHz.
 --
--- The I2S transmitter runs at twice the bit clock, and a 384 kHz frame of two
--- 32-bit slots needs BCK = 64 x Fs = 24.576 MHz, so the wanted clock is
--- 49.152 MHz.  That is not reachable from a 50 MHz reference: the ratio is
--- 3072/3125 and 3125 = 5^5 shares no factor with 3072, so no legal M/N/C
--- lands on it.  The closest is
+-- The I2S transmitter runs at twice the bit clock, and sending a full 32-bit
+-- word in Philips I2S needs 64 bit clocks per channel -- the first bit time of
+-- each slot goes to the format's delay, so 32 data bits will not fit a 32-bit
+-- slot.  That puts BCK at 128 x Fs = 49.152 MHz and this clock at 98.304 MHz.
+-- Which is not reachable from a 50 MHz reference: the ratio is 3072/3125 and
+-- 3125 = 5^5 shares no factor with 3072, so no legal M/N/C lands on it.  The
+-- closest is
 --
---     M = 173, N = 8, C = 22
+--     M = 173, N = 8, C = 11
 --     fPFD = 50 / 8        =   6.250000 MHz   (spec 5 - 325)
 --     fVCO = 50 * 173 / 8  = 1081.250000 MHz  (spec 600 - 1300)
---     fOUT = 1081.25 / 22  =   49.147727 MHz
+--     fOUT = 1081.25 / 11  =   98.295455 MHz
 --
 -- which puts Fs at 383966.6 Hz, 87 ppm below 384 kHz.  That does not matter
 -- and is not a compromise: the device is an asynchronous USB audio sink and
@@ -20,14 +22,14 @@ use IEEE.STD_LOGIC_1164.ALL;
 -- follows this clock rather than the other way round.  Pitch error of 87 ppm
 -- is 0.15 cents.
 --
--- Quartus derives M/N/C from the multiply/divide ratio below; 173/176 factors
--- as M = 173 over N*C = 8*22.  Check the PLL Summary in the fit report if the
+-- Quartus derives M/N/C from the multiply/divide ratio below; 173/88 factors
+-- as M = 173 over N*C = 8*11.  Check the PLL Summary in the fit report if the
 -- reference clock ever changes.
 
 entity audio_pll is
     Port (
         clk_in  : in  STD_LOGIC;   -- 50 MHz reference
-        clk_out : out STD_LOGIC;   -- 49.147727 MHz, = 128 x Fs
+        clk_out : out STD_LOGIC;   -- 98.295455 MHz, = 256 x Fs
         locked  : out STD_LOGIC
     );
 end audio_pll;

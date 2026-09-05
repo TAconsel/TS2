@@ -47,7 +47,13 @@ entity ts2_top is
     Generic (
         -- Adds the JTAG (In-System Sources and Probes) monitor.  Set false for
         -- a production build; it costs a JTAG hub and ~120 registers.
-        DEBUG : boolean := true
+        DEBUG : boolean := true;
+        -- I2S framing, passed to the transmitter and the monitor together.
+        -- 64/32 sends a full 32-bit word and needs 128 bit clocks per frame;
+        -- 32/24 is the 64-bit-clock frame a PCM5102A wants.  See
+        -- i2s_master.vhd.
+        SLOT_BITS : natural := 64;
+        DATA_BITS : natural := 32
     );
     Port (
         clk      : in  STD_LOGIC;   -- 50 MHz
@@ -116,6 +122,7 @@ begin
     play_r <= usb_r when usb_active = '1' else tone_sample;
 
     i2s : entity work.i2s_master
+        generic map (SLOT_BITS => SLOT_BITS, DATA_BITS => DATA_BITS)
         port map (
             clk        => aclk,
             sample_l   => play_l,
@@ -157,6 +164,7 @@ begin
     -- Reads back a decoded frame and the measured sample rate over JTAG.
     dbg_gen : if DEBUG generate
         monitor : entity work.i2s_monitor
+            generic map (SLOT_BITS => SLOT_BITS)
             port map (
                 clk        => aclk,
                 i2s_bck    => bck_i,
