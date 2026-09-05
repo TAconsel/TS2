@@ -1,0 +1,173 @@
+# -------------------------------------------------------------------------- #
+#
+# Copyright (C) 2023  Intel Corporation. All rights reserved.
+# Your use of Intel Corporation's design tools, logic functions 
+# and other software and tools, and any partner logic 
+# functions, and any output files from any of the foregoing 
+# (including device programming or simulation files), and any 
+# associated documentation or information are expressly subject 
+# to the terms and conditions of the Intel Program License 
+# Subscription Agreement, the Intel Quartus Prime License Agreement,
+# the Intel FPGA IP License Agreement, or other applicable license
+# agreement, including, without limitation, that your use is for
+# the sole purpose of programming logic devices manufactured by
+# Intel and sold by Intel or its authorized distributors.  Please
+# refer to the applicable agreement for further details, at
+# https://fpgasoftware.intel.com/eula.
+#
+# -------------------------------------------------------------------------- #
+#
+# Quartus Prime
+# Version 23.1std.0 Build 991 11/28/2023 SC Lite Edition
+# Date created = 20:47:57  September 04, 2026
+#
+# -------------------------------------------------------------------------- #
+#
+# Notes:
+#
+# 1) The default values for assignments are stored in the file:
+#		TS2_assignment_defaults.qdf
+#    If this file doesn't exist, see file:
+#		assignment_defaults.qdf
+#
+# 2) Intel recommends that you do not modify this file. This
+#    file is updated automatically by the Quartus Prime software
+#    and any changes you make may be lost or overwritten.
+#
+# -------------------------------------------------------------------------- #
+
+
+set_global_assignment -name FAMILY "Cyclone 10 LP"
+set_global_assignment -name DEVICE 10CL006YE144C8G
+set_global_assignment -name TOP_LEVEL_ENTITY ts2_top
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION 23.1STD.0
+set_global_assignment -name PROJECT_CREATION_TIME_DATE "20:47:57  SEPTEMBER 04, 2026"
+set_global_assignment -name LAST_QUARTUS_VERSION "23.1std.0 Lite Edition"
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name MIN_CORE_JUNCTION_TEMP 0
+set_global_assignment -name MAX_CORE_JUNCTION_TEMP 85
+set_global_assignment -name ERROR_CHECK_FREQUENCY_DIVISOR 1
+set_global_assignment -name NOMINAL_CORE_SUPPLY_VOLTAGE 1.2V
+set_global_assignment -name VHDL_FILE led_blink.vhd
+set_global_assignment -name VHDL_FILE apll.vhd
+set_global_assignment -name VHDL_FILE audio_pll.vhd
+set_global_assignment -name VHDL_FILE sine_rom.vhd
+set_global_assignment -name VHDL_FILE tone_gen.vhd
+set_global_assignment -name VHDL_FILE i2s_master.vhd
+set_global_assignment -name VHDL_FILE i2s_monitor.vhd
+set_global_assignment -name VHDL_FILE uart_tx.vhd
+set_global_assignment -name VHDL_FILE async_fifo.vhd
+set_global_assignment -name VHDL_FILE ulpi.vhd
+set_global_assignment -name VHDL_FILE ulpi_capture.vhd
+set_global_assignment -name VHDL_FILE usb_desc.vhd
+set_global_assignment -name VHDL_FILE usb_sie.vhd
+set_global_assignment -name VHDL_FILE usb_device.vhd
+set_global_assignment -name VHDL_FILE usb_audio.vhd
+set_global_assignment -name VHDL_FILE usb_top.vhd
+set_global_assignment -name VHDL_FILE ts2_top.vhd
+set_global_assignment -name SDC_FILE TS2.sdc
+set_global_assignment -name PARTITION_NETLIST_TYPE SOURCE -section_id Top
+set_global_assignment -name PARTITION_FITTER_PRESERVATION_LEVEL PLACEMENT_AND_ROUTING -section_id Top
+set_global_assignment -name PARTITION_COLOR 16764057 -section_id Top
+set_location_assignment PIN_100 -to led
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to clk
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to led
+set_location_assignment PIN_91 -to clk
+# PCM5102 DAC module -- I2S
+set_location_assignment PIN_3 -to i2s_lrck
+set_location_assignment PIN_1 -to i2s_din
+set_location_assignment PIN_143 -to i2s_bck
+set_location_assignment PIN_141 -to i2s_sck
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2s_lrck
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2s_din
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2s_bck
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2s_sck
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_lrck
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_din
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_bck
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_sck
+
+# USB3300 ULPI PHY.  The PHY drives CLK, so it is an input here.
+#
+# PIN_23 is a dedicated clock input, which is what this needs: ULPI leaves the
+# link only about 1.7 ns of the 16.7 ns cycle once the PHY's 9 ns output delay
+# and 6 ns setup requirement are taken out, and reaching the global network
+# from a general I/O pin used to eat about 3.3 ns of that in clock skew.  The
+# dedicated pins on this package are 23, 24, 25, 26 and 88..91, of which 91 is
+# already the TCXO.  They are input only, which is why the clock pin is not
+# bidirectional -- see usb_top.vhd.
+set_location_assignment PIN_23 -to ulpi_clk
+set_location_assignment PIN_31 -to ulpi_d[0]
+set_location_assignment PIN_32 -to ulpi_d[1]
+set_location_assignment PIN_33 -to ulpi_d[2]
+set_location_assignment PIN_34 -to ulpi_d[3]
+set_location_assignment PIN_38 -to ulpi_d[4]
+set_location_assignment PIN_39 -to ulpi_d[5]
+set_location_assignment PIN_42 -to ulpi_d[6]
+set_location_assignment PIN_43 -to ulpi_d[7]
+set_location_assignment PIN_44 -to ulpi_stp
+set_location_assignment PIN_46 -to ulpi_nxt
+set_location_assignment PIN_49 -to ulpi_dir
+set_location_assignment PIN_51 -to ulpi_rst
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_clk
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[6]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_d[7]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_stp
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_nxt
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_dir
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to ulpi_rst
+
+# Weak pull-ups on everything the PHY drives, so that the bring-up census can
+# tell a floating pin (reads high) from one a powered PHY is holding low, and
+# from the near-ground clamp of a module that is present but unpowered.  25k
+# is far too weak to trouble either driver in normal operation.
+#
+# ulpi_clk is the exception: dedicated clock inputs have no pull-up, so its
+# census level says only what is on the wire, not whether anything drives it.
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_dir
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_nxt
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[0]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[1]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[2]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[3]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[4]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[5]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[6]
+set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to ulpi_d[7]
+
+# Put the ULPI registers in the I/O cells.  The PHY leaves the link only about
+# 1.7 ns of the 16.7 ns cycle once its 9 ns output delay and 6 ns setup
+# requirement are accounted for, and the clock arrives on a general I/O pin
+# rather than a dedicated one, so its network delay eats into that too.  Pad
+# registers are what makes the budget close.
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[0]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[0]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[1]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[1]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[2]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[2]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[3]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[3]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[4]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[4]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[5]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[5]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[6]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[6]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_d[7]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_d[7]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_dir
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to ulpi_nxt
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to ulpi_stp
+
+# Debug trace out on the core board's CH340 (FPGA_TX).
+set_location_assignment PIN_11 -to uart_tx
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to uart_tx
+
+set_instance_assignment -name PARTITION_HIERARCHY root_partition -to | -section_id Top
