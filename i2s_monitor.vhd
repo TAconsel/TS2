@@ -35,9 +35,10 @@ use altera_mf.altera_mf_components.all;
 
 entity i2s_monitor is
     Generic (
-        -- Bit clocks per channel, matching i2s_master.  The captured frame is
-        -- twice this, and the probe grows with it.
-        SLOT_BITS : natural := 64
+        -- Framing, matching i2s_master.  The captured frame is twice
+        -- SLOT_BITS, and the probe grows with it.
+        SLOT_BITS      : natural := 32;
+        LEFT_JUSTIFIED : boolean := false
     );
     Port (
         clk        : in STD_LOGIC;
@@ -51,10 +52,10 @@ end i2s_monitor;
 
 architecture Behavioral of i2s_monitor is
 
-    -- One second of the 98.295455 MHz audio clock.  The clock is not an
+    -- One second of the 49.147727 MHz audio clock.  The clock is not an
     -- integer number of Hz, so the gate is a few ppb long -- far below the
     -- +-1 count quantisation of the results it gates.
-    constant ONE_SECOND : natural := 98295455;
+    constant ONE_SECOND : natural := 49147727;
 
     signal bck_d, lrck_d : STD_LOGIC := '0';
     signal bck_rise, lrck_rise, frame_end : STD_LOGIC;
@@ -76,6 +77,7 @@ architecture Behavioral of i2s_monitor is
     -- one crossing per period of the tone.
     signal prev_sign   : STD_LOGIC := '0';
     signal cross       : STD_LOGIC;
+    signal sign_bit    : STD_LOGIC;
     signal tone_count, tone_result : unsigned(10 downto 0) := (others => '0');
 
     -- PLL locked, the frame, the reference sample, Fs and the tone count.
@@ -100,10 +102,13 @@ begin
     gate_end <= '1' when sec_count = to_unsigned(ONE_SECOND - 1,
                                                  sec_count'length) else '0';
 
-    -- The top bit of the completed frame's left slot is the I2S delay slot,
-    -- so the sample's sign is the bit below it.
-    cross <= '1' when frame_end = '1' and prev_sign = '1'
-                  and bit_sr(FRAME_BITS-2) = '0' else '0';
+    -- The sample's sign bit: the top of the left slot, or one below it when
+    -- the format spends that bit on its delay.
+    sign_bit <= bit_sr(FRAME_BITS-1) when LEFT_JUSTIFIED
+                else bit_sr(FRAME_BITS-2);
+
+    cross <= '1' when frame_end = '1' and prev_sign = '1' and sign_bit = '0'
+             else '0';
 
     process(clk)
     begin
@@ -118,7 +123,7 @@ begin
             end if;
 
             if frame_end = '1' then
-                prev_sign <= bit_sr(FRAME_BITS-2);
+                prev_sign <= sign_bit;
                 if freeze = '0' then
                     snapshot <= bit_sr;
                     snap_ref <= std_logic_vector(sample_ref);

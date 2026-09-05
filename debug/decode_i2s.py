@@ -14,11 +14,12 @@ import sys
 from fractions import Fraction
 
 # Must match audio_pll / i2s_master / tone_gen.
-FS = Fraction(50_000_000 * 173, 88 * 256)     # 383966.6193 Hz
+FS = Fraction(50_000_000 * 173, 176 * 128)    # 383966.6193 Hz
 INC, PB = 43694, 24
 # Bit clocks per channel, and how many of them carry the sample.  These follow
 # the generics on ts2_top.
-SLOT_BITS, DATA_BITS = 64, 32
+SLOT_BITS, DATA_BITS, LEFT_JUSTIFIED = 32, 24, False
+DELAY = 0 if LEFT_JUSTIFIED else 1
 FRAME_BITS = 2 * SLOT_BITS
 PROBE_BITS = 1 + FRAME_BITS + 32 + 19 + 11
 N, AMP, ATTEN = 256, 32767, 1
@@ -54,13 +55,13 @@ for line in open(sys.argv[1]):
     tone = int(b[52 + FRAME_BITS :], 2)
 
     lh, rh = snap[:SLOT_BITS], snap[SLOT_BITS:]
-    # Slot bit 0 is the I2S delay, then DATA_BITS of sample, then zeros.
-    lu = int(lh[1 : 1 + DATA_BITS], 2)
-    ru = int(rh[1 : 1 + DATA_BITS], 2)
+    # The slot is DELAY bits of format delay, DATA_BITS of sample, then zeros.
+    lu = int(lh[DELAY : DELAY + DATA_BITS], 2)
+    ru = int(rh[DELAY : DELAY + DATA_BITS], 2)
     lval, rval = sdata(lu), sdata(ru)
-    framing = (lh[0] == '0' and rh[0] == '0'
-               and set(lh[1 + DATA_BITS:] or {'0'}) == {'0'}
-               and set(rh[1 + DATA_BITS:] or {'0'}) == {'0'})
+    framing = (lh[:DELAY].strip('0') == '' and rh[:DELAY].strip('0') == ''
+               and set(lh[DELAY + DATA_BITS:] or {'0'}) == {'0'}
+               and set(rh[DELAY + DATA_BITS:] or {'0'}) == {'0'})
     onlut = lu in EXPECT and (int(ref, 2) >> (32 - DATA_BITS)) in EXPECT
 
     print("%-3s %-5s %-8d %-8d %-11d %-11d %-6s %-6s %s" %

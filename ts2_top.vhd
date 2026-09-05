@@ -49,11 +49,13 @@ entity ts2_top is
         -- a production build; it costs a JTAG hub and ~120 registers.
         DEBUG : boolean := true;
         -- I2S framing, passed to the transmitter and the monitor together.
-        -- 64/32 sends a full 32-bit word and needs 128 bit clocks per frame;
-        -- 32/24 is the 64-bit-clock frame a PCM5102A wants.  See
-        -- i2s_master.vhd.
-        SLOT_BITS : natural := 64;
-        DATA_BITS : natural := 32
+        -- The default is the 64-bit-clock frame a PCM5102A works out for
+        -- itself; 32/32/true sends a full 32-bit word at the same bit clock
+        -- but needs the DAC's FMT pin high, and 64/32/false sends one in
+        -- Philips I2S at twice the bit clock.  See i2s_master.vhd.
+        SLOT_BITS      : natural := 32;
+        DATA_BITS      : natural := 24;
+        LEFT_JUSTIFIED : boolean := false
     );
     Port (
         clk      : in  STD_LOGIC;   -- 50 MHz
@@ -122,7 +124,9 @@ begin
     play_r <= usb_r when usb_active = '1' else tone_sample;
 
     i2s : entity work.i2s_master
-        generic map (SLOT_BITS => SLOT_BITS, DATA_BITS => DATA_BITS)
+        generic map (SLOT_BITS      => SLOT_BITS,
+                     DATA_BITS      => DATA_BITS,
+                     LEFT_JUSTIFIED => LEFT_JUSTIFIED)
         port map (
             clk        => aclk,
             sample_l   => play_l,
@@ -164,7 +168,8 @@ begin
     -- Reads back a decoded frame and the measured sample rate over JTAG.
     dbg_gen : if DEBUG generate
         monitor : entity work.i2s_monitor
-            generic map (SLOT_BITS => SLOT_BITS)
+            generic map (SLOT_BITS      => SLOT_BITS,
+                         LEFT_JUSTIFIED => LEFT_JUSTIFIED)
             port map (
                 clk        => aclk,
                 i2s_bck    => bck_i,

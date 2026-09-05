@@ -6,8 +6,8 @@ PCM5102A over I2S.  When nothing is streaming, a 1 kHz test tone plays instead,
 so an idle board still proves it is alive.
 
 **This works.**  The device enumerates as `1209:0001 TS2 USB Audio`, ALSA picks
-it up as a **high speed** USB-Audio card at `s32le 2ch 384000Hz`, and the full
-32-bit sample reaches the I2S bus.  Sustained playback runs with zero dropped
+it up as a **high speed** USB-Audio card at `s32le 2ch 384000Hz`, and the top
+24 bits of each 32-bit sample reach the DAC.  Sustained playback runs with zero dropped
 packets and zero FIFO overflows, one isochronous packet per 125 us microframe,
 and the feedback loop holding around 48.05 samples per microframe.
 
@@ -70,26 +70,30 @@ High speed also means the datapath runs at one byte per 60 MHz clock in both
 directions, sustained, rather than one byte per forty.  Two of the bugs below
 are entirely about that.
 
-**A full 32-bit word to the DAC, which costs a 128 x Fs frame.**  Philips I2S
-spends the first bit time of each slot on the format's one-clock delay, so a
-32-bit word will not fit a 32-bit slot: at 64 x Fs the most that fits is 31
-bits, and the sensible word length is 24.  Sending all 32 means 64 bit clocks
-per channel, so BCK is 128 x Fs = 49.1 MHz and the transmitter's clock is
-256 x Fs = 98.3 MHz.
+**The I2S framing is generic**, because it is what a change of DAC is most
+likely to move.  `SLOT_BITS`, `DATA_BITS` and `LEFT_JUSTIFIED` on `ts2_top` are
+passed to `i2s_master` and the JTAG monitor together:
 
-Both the word length and the frame size are generics on `ts2_top`, passed to
-`i2s_master` and the JTAG monitor together:
-
-| `SLOT_BITS` / `DATA_BITS` | frame | BCK at 384 kHz | |
+| `SLOT_BITS` / `DATA_BITS` / `LEFT_JUSTIFIED` | frame | BCK at 384 kHz | |
 | --- | --- | --- | --- |
-| 64 / 32 | 128 x Fs | 49.1 MHz | full 32-bit (default) |
-| 32 / 24 | 64 x Fs | 24.6 MHz | what a PCM5102A wants |
+| **32 / 24 / false** | 64 x Fs | 24.6 MHz | 24-bit I2S — **default** |
+| 32 / 32 / true | 64 x Fs | 24.6 MHz | full 32-bit, needs the DAC's FMT pin high |
+| 64 / 32 / false | 128 x Fs | 49.1 MHz | full 32-bit Philips I2S |
 
-The PCM5102A itself resolves about 19 bits -- 112 dB of dynamic range -- so
-bits below the 24th are some 30 dB under its own noise floor and 32-bit output
-buys it nothing.  It is there for a converter that can use it.  **If the DAC
-will not lock to a 49 MHz bit clock, change the generics to 32 / 24 and the
-bit clock halves.**
+Philips I2S spends the first bit time of each slot on a delay, so a 32-bit word
+does not fit a 32-bit slot -- at 64 x Fs the most that fits is 31 bits and the
+sensible word length is 24.  Sending all 32 in I2S therefore means 64 bit
+clocks per channel, doubling BCK and the transmitter's clock.  Left-justified
+has no delay bit and fits 32 bits exactly at the original rate, which makes it
+the better way to feed a 32-bit converter here.
+
+**The third row was tried on the PCM5102A and produced silence.**  The
+waveform is correct -- the JTAG monitor, which re-decodes the bus the way the
+DAC does, reported the right sample rate, clean framing and the right values --
+but the part works its format out from the BCK/LRCK ratio and takes 32, 48 or
+64 bit clocks a frame, not 128.  It buys that DAC nothing anyway: 112 dB of
+dynamic range is about 19 bits, so bits below the 24th are some 30 dB under its
+own noise floor.  The mode is kept for a converter that can use it.
 
 **SCK is grounded.**  The PCM5102A wants its master clock at 256 x Fs, which at
 384 kHz would be another 98.3 MHz pin.  Holding SCK low puts the part in
@@ -148,7 +152,7 @@ everything that had only ever been exercised at one byte per forty clocks.
 
 ## Resource usage
 
-3,510 of 6,272 logic elements (56%), 100 kbit of 276 kbit of memory (36%), one
+3,263 of 6,272 logic elements (52%), 92 kbit of 276 kbit of memory (33%), one
 of two PLLs, no multipliers.  Roughly a third of that is debug scaffolding:
 the JTAG hub and probe, the ULPI bus capture and its 28 kbit buffer, the UART
 and the status frame builder.  `DEBUG => false` on `ts2_top` drops the JTAG

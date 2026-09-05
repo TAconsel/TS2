@@ -4,43 +4,50 @@ use IEEE.NUMERIC_STD.ALL;
 
 -- I2S master transmitter for a DAC in slave mode.
 --
--- The word length and the frame size are generics, because they are the two
--- things a change of DAC is most likely to move:
+-- The framing is generic, because it is what a change of DAC is most likely to
+-- move:
 --
---   SLOT_BITS  bit clocks per channel, so the frame is twice this
---   DATA_BITS  bits of the sample actually sent, most significant first
+--   SLOT_BITS       bit clocks per channel, so the frame is twice this
+--   DATA_BITS       bits of the sample actually sent, most significant first
+--   LEFT_JUSTIFIED  drop the format's leading delay bit
 --
--- Philips I2S spends the first bit time of each slot on the format's one-clock
--- delay, so DATA_BITS can be at most SLOT_BITS - 1.  That is why a 32-bit word
--- does not fit a 32-bit slot: 64 x Fs carries 24-bit audio comfortably and
--- 32-bit audio not at all, and 128 x Fs is what full 32-bit costs.
+-- Philips I2S spends the first bit time of each slot on a delay, so there
+-- DATA_BITS can be at most SLOT_BITS - 1: a 32-bit word does not fit a 32-bit
+-- slot.  Left-justified has no delay bit and fits exactly.  Three useful
+-- combinations, at 384 kHz:
 --
---   SLOT_BITS = 64, DATA_BITS = 32   full 32-bit, BCK = 128 x Fs   (default)
---   SLOT_BITS = 32, DATA_BITS = 24   24-bit,      BCK =  64 x Fs
+--   32 / 24 / false   24-bit I2S,            BCK =  64 x Fs = 24.6 MHz
+--   32 / 32 / true    32-bit left-justified, BCK =  64 x Fs = 24.6 MHz
+--   64 / 32 / false   32-bit I2S,            BCK = 128 x Fs = 49.1 MHz
+--
+-- The first is the default and is what a PCM5102A wants: it works out the
+-- format from the BCK/LRCK ratio and expects 32, 48 or 64 bit clocks a frame,
+-- so the 128 x Fs frame in the third row leaves it silent however correct the
+-- waveform is.  The second row is the one to reach for on that part, and needs
+-- its FMT pin tied high rather than low.
 --
 -- The input clock is twice the bit clock, and everything else is a
 -- power-of-two tap off one counter, so nothing can drift out of phase with
 -- anything else.  With the default generics at 384 kHz:
 --
---     clk    -> 256 x Fs = 98.295455 MHz
---     div(0) -> BCK  = clk / 2   = 49.147727 MHz = 128 x Fs
---     div(7) -> LRCK = clk / 256 = 383966.6 Hz   = Fs
+--     clk    -> 128 x Fs = 49.147727 MHz
+--     div(0) -> BCK  = clk / 2   = 24.573864 MHz = 64 x Fs
+--     div(6) -> LRCK = clk / 128 = 383966.6 Hz   = Fs
 --
 -- SCK (the DAC's master clock) is not driven.  The PCM5102A wants it at
 -- 256 x Fs, which at 384 kHz would be another 98.3 MHz pin, and grounding it
 -- instead puts the part in BCK-only mode where its own PLL derives the system
 -- clock from BCK.  That is what these breakout modules are built for.
 --
--- Frame format is Philips I2S (PCM5102A with FMT tied low, the default on the
--- breakout modules): MSB first, LRCK low = left, and the MSB delayed by one
--- BCK period after the LRCK edge.  DIN is updated on the falling edge of BCK,
+-- MSB first, LRCK low = left.  DIN is updated on the falling edge of BCK,
 -- giving the DAC half a bit period of setup before it samples on the rising
 -- edge.
 
 entity i2s_master is
     Generic (
-        SLOT_BITS : natural := 64;
-        DATA_BITS : natural := 32
+        SLOT_BITS      : natural := 32;
+        DATA_BITS      : natural := 24;
+        LEFT_JUSTIFIED : boolean := false
     );
     Port (
         clk       : in  STD_LOGIC;                -- 4 x SLOT_BITS x Fs
@@ -85,10 +92,22 @@ architecture Behavioral of i2s_master is
     signal hold_r : std_logic_vector(31 downto 0) := (others => '0');
 
     constant ALL_ONES : unsigned(DIV_BITS-1 downto 0) := (others => '1');
-    -- The slot holds the delay bit, then the data, then zeros.  A null range
-    -- here is legal and is what DATA_BITS = SLOT_BITS - 1 gives.
-    constant PAD      : std_logic_vector(SLOT_BITS-2-DATA_BITS downto 0)
-                        := (others => '0');
+
+    -- Place the sample in an otherwise empty slot: at the top for
+    -- left-justified, one bit down for I2S, with the rest left at zero.
+    function load_word(s : std_logic_vector(31 downto 0))
+        return std_logic_vector is
+        variable r : std_logic_vector(SLOT_BITS-1 downto 0) := (others => '0');
+    begin
+        if LEFT_JUSTIFIED then
+            r(SLOT_BITS-1 downto SLOT_BITS-DATA_BITS)
+                := s(31 downto 32-DATA_BITS);
+        else
+            r(SLOT_BITS-2 downto SLOT_BITS-1-DATA_BITS)
+                := s(31 downto 32-DATA_BITS);
+        end if;
+        return r;
+    end function;
 
 begin
 
@@ -114,9 +133,9 @@ begin
                     -- is about to start.  The top div bit is still the
                     -- outgoing channel, so the incoming one is its complement.
                     if div(DIV_BITS-1) = '1' then
-                        shreg <= '0' & hold_l(31 downto 32-DATA_BITS) & PAD;
+                        shreg <= load_word(hold_l);
                     else
-                        shreg <= '0' & hold_r(31 downto 32-DATA_BITS) & PAD;
+                        shreg <= load_word(hold_r);
                     end if;
                 else
                     shreg <= shreg(SLOT_BITS-2 downto 0) & '0';
