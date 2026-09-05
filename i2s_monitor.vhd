@@ -13,20 +13,18 @@ use altera_mf.altera_mf_components.all;
 -- a frame read back over JTAG is evidence about the bus itself and not just a
 -- copy of the shift register.
 --
--- Probe layout (116 bits, MSB first as read_probe_data returns it):
---     115..52 : one complete stereo frame, 64 bits, left half first
---      51..28 : the sample tone_gen presented at the capture instant.  This
+-- Probe layout (119 bits, MSB first as read_probe_data returns it):
+--     118     : PLL locked
+--     117..54 : one complete stereo frame, 64 bits, left half first
+--      53..30 : the sample tone_gen presented at the capture instant.  This
 --               leads the frame by one sample period, because i2s_master
 --               transmits from a snapshot taken just before the frame starts.
---     116     : PLL locked
---      27..11 : LRCK edges over one second of audio clock = Fs in Hz (48000)
+--      29..11 : LRCK edges over one second of audio clock = Fs in Hz (383967)
 --      10.. 0 : negative-to-positive crossings of the transmitted left sample
 --               over the same gate = tone frequency in Hz (1000)
 --
 -- Source bits:
 --     0 : freeze the reported values so repeated reads are coherent
---     1 : sck_off -- stop driving SCK, leaving audio running, so a module that
---         grounds SCK for its internal PLL can be tested without rewiring.
 --
 -- Note: there is deliberately no pad-level readback here.  Reading an inout
 -- port back in VHDL returns this entity's own driver rather than the pad, so
@@ -39,18 +37,17 @@ entity i2s_monitor is
         i2s_bck    : in STD_LOGIC;
         i2s_lrck   : in STD_LOGIC;
         i2s_din    : in STD_LOGIC;
-        sample_ref : in signed(23 downto 0);
-        pll_locked : in STD_LOGIC;
-        sck_off    : out STD_LOGIC
+        sample_ref : in signed(31 downto 0);
+        pll_locked : in STD_LOGIC
     );
 end i2s_monitor;
 
 architecture Behavioral of i2s_monitor is
 
-    -- One second of the 12.288136 MHz audio clock.  The clock is not an
-    -- integer number of Hz, so the gate is 33 ppb long -- far below the +-1
-    -- count quantisation of the results it gates.
-    constant ONE_SECOND : natural := 12288136;
+    -- One second of the 49.147727 MHz audio clock.  The clock is not an
+    -- integer number of Hz, so the gate is a few ppb long -- far below the
+    -- +-1 count quantisation of the results it gates.
+    constant ONE_SECOND : natural := 49147727;
 
     signal bck_d, lrck_d : STD_LOGIC := '0';
     signal bck_rise, lrck_rise, frame_end : STD_LOGIC;
@@ -62,7 +59,9 @@ architecture Behavioral of i2s_monitor is
     signal sec_count   : unsigned(25 downto 0) := (others => '0');
     signal gate_end    : STD_LOGIC;
 
-    signal lrck_count, fs_result : unsigned(16 downto 0) := (others => '0');
+    -- 19 bits: 384 kHz needs more room than 48 kHz did, and a counter that
+    -- silently wraps reports a plausible-looking wrong answer.
+    signal lrck_count, fs_result : unsigned(18 downto 0) := (others => '0');
 
     -- Sign of the left sample in the frame that just finished, used to count
     -- one crossing per period of the tone.
@@ -70,14 +69,13 @@ architecture Behavioral of i2s_monitor is
     signal cross       : STD_LOGIC;
     signal tone_count, tone_result : unsigned(10 downto 0) := (others => '0');
 
-    signal probe  : std_logic_vector(116 downto 0);
+    signal probe  : std_logic_vector(118 downto 0);
     signal source : std_logic_vector(1 downto 0);
     signal freeze : STD_LOGIC;
 
 begin
 
     freeze  <= source(0);
-    sck_off <= source(1);
 
     -- BCK/LRCK are registered outputs of this same clock, so edge detection
     -- here is ordinary synchronous logic with no crossing involved.
@@ -112,7 +110,10 @@ begin
                 prev_sign <= bit_sr(62);
                 if freeze = '0' then
                     snapshot <= bit_sr;
-                    snap_ref <= std_logic_vector(sample_ref);
+                    -- The top 24 bits are what actually reaches the DAC, and
+                    -- keeping the probe 24 bits wide keeps its layout and the
+                    -- host-side decoder unchanged.
+                    snap_ref <= std_logic_vector(sample_ref(31 downto 8));
                 end if;
             end if;
 
@@ -141,7 +142,7 @@ begin
     issp : altsource_probe
         generic map (
             instance_id            => "I2SM",
-            probe_width            => 117,
+            probe_width            => 119,
             source_width           => 2,
             source_initial_value   => "0",
             enable_metastability   => "YES"

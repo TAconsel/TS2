@@ -94,8 +94,8 @@ use IEEE.NUMERIC_STD.ALL;
 --   21  audio packets dropped, running total
 --   22  FIFO overflows, running total
 --   23  FIFO underruns, running total
---   24  feedback rate byte 0    10.14 samples per frame, 0x0C0000 = 48.000
---   25  feedback rate byte 1
+--   24  feedback rate byte 0    16.16 samples per microframe,
+--   25  feedback rate byte 1    0x00300000 = 48.000
 --   26  feedback rate byte 2
 --   27  heartbeat
 --   28  pin level   DATA[7:0]
@@ -120,6 +120,8 @@ use IEEE.NUMERIC_STD.ALL;
 --       device has been locked but unconfigured
 --   45  audio FIFO overflows, running total
 --   46  audio FIFO underruns, running total
+--   47  feedback rate byte 3
+--   48  completed high-speed chirp handshakes
 --
 -- Each status frame is followed by a bus capture block: the two bytes
 -- 0x55 0xBB, then 1024 entries of four bytes each -- the bus byte, then bit0
@@ -147,8 +149,8 @@ entity usb_top is
         -- Audio side, in the I2S clock domain.
         aclk       : in  STD_LOGIC;
         frame_tick : in  STD_LOGIC;
-        sample_l   : out signed(23 downto 0);
-        sample_r   : out signed(23 downto 0);
+        sample_l   : out signed(31 downto 0);
+        sample_r   : out signed(31 downto 0);
         -- High while USB audio is what the DAC is being fed.
         audio_active : out STD_LOGIC
     );
@@ -213,7 +215,7 @@ architecture Behavioral of usb_top is
     signal frame_cnt : unsigned(23 downto 0) := (others => '0');
     -- Wide enough for the status frame plus the 1024-byte capture block.
     signal frame_idx : unsigned(12 downto 0) := (others => '1');
-    constant CAP_START : natural := 49;
+    constant CAP_START : natural := 51;
     constant FRAME_END : natural := CAP_START + 4095;
     signal heartbeat : unsigned(7 downto 0)  := (others => '0');
     signal tx_byte   : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
@@ -229,6 +231,8 @@ architecture Behavioral of usb_top is
     signal m_stp   : STD_LOGIC;
 
     signal phy_ready, phy_id_ok, usb_reset, configured, streaming : STD_LOGIC;
+    signal speed_hs : STD_LOGIC;
+    signal chirps   : unsigned(7 downto 0);
     signal dev_addr  : STD_LOGIC_VECTOR(6 downto 0);
     signal sof       : STD_LOGIC;
     signal frame_no  : STD_LOGIC_VECTOR(10 downto 0);
@@ -238,7 +242,7 @@ architecture Behavioral of usb_top is
     signal audio_valid : STD_LOGIC;
     signal audio_done  : STD_LOGIC;
     signal audio_drop  : STD_LOGIC;
-    signal fb_value    : unsigned(23 downto 0);
+    signal fb_value    : unsigned(31 downto 0);
     signal stat_setup, stat_tx : unsigned(7 downto 0);
     signal stat_over, stat_under : unsigned(7 downto 0);
 
@@ -259,8 +263,9 @@ architecture Behavioral of usb_top is
     signal snap_sof   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
     signal snap_pkt   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
     signal snap_misc  : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
-    signal snap_fb    : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
+    signal snap_fb    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     signal snap_fifo  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    signal snap_chirp : STD_LOGIC_VECTOR(7 downto 0)  := (others => '0');
     signal phy_vid    : STD_LOGIC_VECTOR(7 downto 0);
     signal init_step  : STD_LOGIC_VECTOR(3 downto 0);
     signal phy_pid    : STD_LOGIC_VECTOR(7 downto 0);
@@ -287,10 +292,12 @@ architecture Behavioral of usb_top is
     signal r_sof   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
     signal r_pkt   : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
     signal r_misc  : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
-    signal r_fb    : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
+    signal r_fb    : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
     signal r_fifo  : STD_LOGIC_VECTOR(15 downto 0) := (others => '0');
+    signal r_chirp : STD_LOGIC_VECTOR(7 downto 0)  := (others => '0');
 
     signal cap_addr : unsigned(9 downto 0);
+    signal cap_byte : unsigned(1 downto 0);
     signal cap_data : STD_LOGIC_VECTOR(31 downto 0);
     signal cap_full : STD_LOGIC;
 
@@ -330,6 +337,8 @@ begin
             ulpi_nxt    => ulpi_nxt,
             ulpi_stp    => m_stp,
             phy_ready   => phy_ready,
+            speed_hs    => speed_hs,
+            chirps      => chirps,
             phy_id_ok   => phy_id_ok,
             phy_vid     => phy_vid,
             phy_pid     => phy_pid,
@@ -382,6 +391,10 @@ begin
     -- The address is driven a whole UART byte time ahead of the byte that
     -- uses it, so the memory's registered output has long since settled.
     cap_addr <= resize((frame_idx - CAP_START) srl 2, 10);
+    -- Which byte of the four-byte entry.  Taken from the offset into the
+    -- block, not from frame_idx itself, so moving the block does not silently
+    -- rotate every entry.
+    cap_byte <= resize(frame_idx - CAP_START, 2);
 
     capture : entity work.ulpi_capture
         -- 0x2D is a SETUP token's PID with its check nibble, so the capture
@@ -432,8 +445,9 @@ begin
             if req_s3 /= req_s2 then
                 -- The two rate counters are reported per window and restart
                 -- here; the rest are levels or running totals.
-                snap_flags <= '0' & reset_seen & linestate & act_s2 &
+                snap_flags <= speed_hs & reset_seen & linestate & act_s2 &
                               streaming & configured & phy_ready;
+                snap_chirp <= std_logic_vector(chirps);
                 snap_addr  <= '0' & dev_addr;
                 snap_frame <= "00000" & frame_no;
                 snap_sof   <= std_logic_vector(sof_cnt);
@@ -519,6 +533,7 @@ begin
             r_misc  <= snap_misc;
             r_fb    <= snap_fb;
             r_fifo  <= snap_fifo;
+            r_chirp <= snap_chirp;
 
             win_tick <= '0';
             if win_cnt = WINDOW - 1 then
@@ -716,15 +731,17 @@ begin
                     when 44 => tx_byte <= srch_code & std_logic_vector(idle_win(4 downto 0));
                     when 45 => tx_byte <= r_fifo(7 downto 0);
                     when 46 => tx_byte <= r_fifo(15 downto 8);
-                    when 47 => tx_byte <= x"55";
-                    when 48 => tx_byte <= x"BB";
+                    when 47 => tx_byte <= r_fb(31 downto 24);
+                    when 48 => tx_byte <= r_chirp;
+                    when 49 => tx_byte <= x"55";
+                    when 50 => tx_byte <= x"BB";
                     when others =>
                         -- The capture block: bus byte, control byte, then the
                         -- dwell count low and high.
-                        case to_integer(frame_idx(1 downto 0)) is
-                            when 3      => tx_byte <= cap_data(7 downto 0);
-                            when 0      => tx_byte <= cap_data(15 downto 8);
-                            when 1      => tx_byte <= cap_data(23 downto 16);
+                        case to_integer(cap_byte) is
+                            when 0      => tx_byte <= cap_data(7 downto 0);
+                            when 1      => tx_byte <= cap_data(15 downto 8);
+                            when 2      => tx_byte <= cap_data(23 downto 16);
                             when others => tx_byte <= cap_data(31 downto 24);
                         end case;
                 end case;

@@ -26,7 +26,11 @@ architecture sim of tb_usb_device is
 
     constant PERIOD    : time    := 16.667 ns;   -- 60 MHz
     -- One full-speed byte is 8 bits at 12 Mbit/s, which is 40 ULPI clocks.
+    -- High speed takes a byte every clock instead, which is the demanding
+    -- case for anything feeding the transmitter.
     constant BYTE_CLKS : natural := 40;
+    signal   hs_rate   : boolean := false;
+    signal   byte_gap  : natural := BYTE_CLKS;
 
     signal clk : STD_LOGIC := '0';
     signal rst : STD_LOGIC := '1';
@@ -49,6 +53,8 @@ architecture sim of tb_usb_device is
     signal reg_func, reg_otg : STD_LOGIC_VECTOR(7 downto 0);
     signal vbus : STD_LOGIC_VECTOR(1 downto 0);
     signal init_step : STD_LOGIC_VECTOR(3 downto 0);
+    signal speed_hs  : STD_LOGIC;
+    signal chirps    : unsigned(7 downto 0);
     signal dev_addr  : STD_LOGIC_VECTOR(6 downto 0);
     signal sof       : STD_LOGIC;
     signal frame_no  : STD_LOGIC_VECTOR(10 downto 0);
@@ -59,7 +65,8 @@ architecture sim of tb_usb_device is
     signal audio_done  : STD_LOGIC;
     signal audio_drop  : STD_LOGIC;
 
-    signal fb_value : unsigned(23 downto 0) := to_unsigned(48 * 16384, 24);
+    -- 48 samples per microframe in 16.16, the high-speed feedback format.
+    signal fb_value : unsigned(31 downto 0) := to_unsigned(48 * 65536, 32);
 
     -- Audio bytes the device handed on, collected for checking.
     signal audio_count : natural := 0;
@@ -106,15 +113,22 @@ architecture sim of tb_usb_device is
 begin
 
     clk <= (not clk) after PERIOD / 2 when running else '0';
+    byte_gap <= 1 when hs_rate else BYTE_CLKS;
 
     ulpi_d <= d_out when d_oe = '1' else (others => 'Z');
     ulpi_d <= phy_d when phy_oe = '1' else (others => 'Z');
     d_in   <= ulpi_d;
 
     dut : entity work.usb_device
-        -- 100 us instead of 20 ms: long enough to exercise the delay step,
-        -- short enough not to dominate the run.
-        generic map (DETACH_CYCLES => 6000)
+        -- Real timings scaled down: long enough to exercise each step, short
+        -- enough not to dominate the run.  The no-microframe timeout is set
+        -- beyond the length of the whole test, since the stimulus here is a
+        -- sequence of transactions rather than a running bus.
+        generic map (DETACH_CYCLES => 6000,
+                     CHIRP_CYCLES  => 2000,
+                     LISTEN_CYCLES => 40000,
+                     STABLE_CYCLES => 100,
+                     NO_SOF_CYCLES => 10_000_000)
         port map (
             clk         => clk,
             rst         => rst,
@@ -125,6 +139,8 @@ begin
             ulpi_nxt    => nxt,
             ulpi_stp    => stp,
             phy_ready   => phy_ready,
+            speed_hs    => speed_hs,
+            chirps      => chirps,
             phy_id_ok   => phy_id_ok,
             phy_vid     => phy_vid,
             phy_pid     => phy_pid,
@@ -259,19 +275,30 @@ begin
             phy_oe <= '1';
             phy_d  <= x"00";
             tick;                          -- turnaround
-            phy_d <= "00" & "01" & "01" & ls;   -- RX CMD, RxActive set
-            tick;
+            if not hs_rate then
+                phy_d <= "00" & "01" & "01" & ls;   -- RX CMD, RxActive set
+                tick;
+            end if;
+            -- At high speed the real part sends the packet's bytes straight
+            -- after the turnaround and only reports RxActive afterwards, so
+            -- the leading status byte is deliberately omitted here.
             for i in data'range loop
                 phy_d <= data(i);
                 nxt   <= '1';
                 tick;
                 nxt   <= '0';
                 if err and i = data'low then
+                    -- Reporting an error costs a cycle with NXT low, which is
+                    -- what the PHY does to get a status byte in edgeways even
+                    -- at high speed.
                     phy_d <= "00" & "11" & "01" & ls;   -- RxError
+                    tick;
                 else
                     phy_d <= "00" & "01" & "01" & ls;
+                    if byte_gap > 1 then
+                        tick(byte_gap - 1);
+                    end if;
                 end if;
-                tick(BYTE_CLKS - 1);
             end loop;
             phy_d <= "00" & "00" & "01" & ls;   -- RX CMD, RxActive clear
             tick;
@@ -357,13 +384,15 @@ begin
                         stopped := true;
                         exit;
                     end if;
-                    cap(n) := d_out;
+                    if n <= cap'high then
+                        cap(n) := d_out;
+                    end if;
                     n := n + 1;
                 end loop;
                 nxt <= '0';
 
                 while not stopped loop
-                    for i in 1 to BYTE_CLKS loop
+                    for i in 1 to byte_gap loop
                         tick;
                         if stp = '1' then
                             stopped := true;
@@ -371,7 +400,9 @@ begin
                         end if;
                     end loop;
                     exit when stopped;
-                    cap(n) := d_out;
+                    if n <= cap'high then
+                        cap(n) := d_out;
+                    end if;
                     n := n + 1;
                     nxt <= '1';
                     tick;
@@ -379,6 +410,22 @@ begin
                 end loop;
                 cap_n := n;
             end if;
+        end procedure;
+
+        -- Tell the link what the USB lines are doing, with no packet
+        -- attached.  This is how the PHY reports a reset, and how it reports
+        -- the host's chirps during speed negotiation.
+        procedure line(ls : STD_LOGIC_VECTOR(1 downto 0); n : natural) is
+        begin
+            dir    <= '1';
+            phy_oe <= '1';
+            phy_d  <= x"00";
+            tick;                                   -- turnaround
+            phy_d  <= "00" & "00" & "01" & ls;      -- RX CMD, receiver idle
+            tick;
+            dir    <= '0';
+            phy_oe <= '0';
+            tick(n);
         end procedure;
 
         -- Seize the bus just as the link starts a command, the way the PHY
@@ -575,16 +622,49 @@ begin
               "function control took 0x45 after the PHY pre-empted the write");
         check(reg_otg = x"00", "otg control took 0x00");
 
-        -- A host reset: SE0 for well over the 100 us the device looks for.
-        dir <= '1'; phy_oe <= '1'; phy_d <= x"00";
-        tick;
-        phy_d <= "00" & "00" & "00" & SE0;
-        tick(7000);
-        dir <= '0'; phy_oe <= '0';
-        tick(10);
-        check(dev_addr = "0000000", "address cleared by bus reset");
+        ----------------------------------------------------------------
+        note("--- bus reset and the high-speed handshake ---");
+        -- SE0 for well over the 100 us the device looks for.
+        line(SE0, 6500);
 
-        phy_rx(byte_arr'(0 => x"00"), IDLE_J);
+        -- It should switch the transceiver to high speed while keeping the
+        -- full-speed termination, and turn off bit stuffing so that
+        -- transmitting zeroes puts a raw K on the wire.
+        service(200000, ok);
+        check(ok and regs(16#04#) = x"54",
+              "function control set to chirp mode, got "
+              & integer'image(to_integer(unsigned(regs(16#04#)))));
+
+        -- Then chirp K: one transmit with no PID, held for the whole chirp.
+        service(200000, ok);
+        check(ok and cap(0) = x"40", "chirp sent as a transmit with no PID");
+        check(cap_n > 8, "chirp held for a run of bytes, got "
+              & integer'image(cap_n));
+
+        -- Encoding goes back to normal so the host's chirps can be seen.
+        service(200000, ok);
+        check(ok and regs(16#04#) = x"44",
+              "function control set to listen for the host");
+
+        -- The host answers with alternating chirps, each held well past the
+        -- 20 us the device insists on.  Three K-J pairs is the minimum.
+        for i in 1 to 3 loop
+            line("10", 400);        -- chirp K
+            line("01", 400);        -- chirp J
+        end loop;
+
+        service(200000, ok);
+        check(ok and regs(16#04#) = x"40",
+              "function control set to high speed, got "
+              & integer'image(to_integer(unsigned(regs(16#04#)))));
+        tick(20);
+        check(speed_hs = '1', "device reports high speed");
+        -- From here the bus runs at high-speed rates: a byte every clock.
+        hs_rate <= true;
+        check(chirps = 1, "one completed handshake counted");
+        check(dev_addr = "0000000", "address cleared by the reset");
+
+        line(SE0, 20);
 
         ----------------------------------------------------------------
         note("--- GET_DESCRIPTOR(DEVICE) to address 0 ---");
@@ -684,7 +764,7 @@ begin
         check(not ok, "no response to a truncated token");
         phy_rx(token(PID_IN, 7, EP_FEEDBACK_IN), IDLE_J);
         service(4000, ok);
-        check(ok and cap_n = 6, "still responsive after the runt");
+        check(ok and cap_n = 7, "still responsive after the runt");
 
         ----------------------------------------------------------------
         note("--- a packet the PHY flags as bad is not accepted ---");
@@ -699,12 +779,13 @@ begin
         note("--- feedback endpoint ---");
         phy_rx(token(PID_IN, 7, EP_FEEDBACK_IN), IDLE_J);
         service(4000, ok);
-        check(ok and cap_n = 6, "feedback packet is PID + 3 bytes + CRC, got "
+        check(ok and cap_n = 7, "feedback packet is PID + 4 bytes + CRC, got "
               & integer'image(cap_n) & " bytes");
         check_tx_crc("the feedback packet");
-        if cap_n = 6 then
-            check(cap(1) = x"00" and cap(2) = x"00" and cap(3) = x"0C",
-                  "feedback reports 48.000 samples per frame");
+        if cap_n = 7 then
+            check(cap(1) = x"00" and cap(2) = x"00"
+                  and cap(3) = x"30" and cap(4) = x"00",
+                  "feedback reports 48.000 samples per microframe");
         end if;
 
         ----------------------------------------------------------------

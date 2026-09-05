@@ -14,8 +14,8 @@ import sys
 from fractions import Fraction
 
 # Must match audio_pll / i2s_master / tone_gen.
-FS = Fraction(50_000_000 * 29, 118 * 256)      # 48000.5297 Hz
-INC, PB = 349521, 24
+FS = Fraction(50_000_000 * 173, 176 * 128)    # 383966.6193 Hz
+INC, PB = 43694, 24
 N, AMP, ATTEN = 256, 32767, 1
 
 TABLE = [int(round(AMP * math.sin(2 * math.pi * i / N))) for i in range(N)]
@@ -37,9 +37,9 @@ for line in open(sys.argv[1]):
     if not m:
         continue
     i, b = m.group(1), m.group(2)
-    assert len(b) == 117, "probe width %d, expected 117" % len(b)
+    assert len(b) == 119, "probe width %d, expected 119" % len(b)
     lock, snap, ref = b[0], b[1:65], b[65:89]
-    fs, tone = int(b[89:106], 2), int(b[106:], 2)
+    fs, tone = int(b[89:108], 2), int(b[108:], 2)
 
     lh, rh = snap[:32], snap[32:]
     lu, ru = int(lh[1:25], 2), int(rh[1:25], 2)
@@ -57,7 +57,7 @@ for line in open(sys.argv[1]):
         ok = False
 
 print()
-print("expected  Fs = %.4f Hz (%+.0f ppm vs 48000) -> counts as %s"
-      % (FS, (float(FS) - 48000) / 48000 * 1e6, sorted(FS_OK)))
+print("expected  Fs = %.4f Hz (%+.0f ppm vs 384000) -> counts as %s"
+      % (FS, (float(FS) - 384000) / 384000 * 1e6, sorted(FS_OK)))
 print("expected tone = %.4f Hz -> counts as 1000" % TONE_HZ)
 print("reads: %d   all consistent: %s" % (rows, ok))

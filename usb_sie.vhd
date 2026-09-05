@@ -51,7 +51,11 @@ entity usb_sie is
         rx_valid  : in  STD_LOGIC;
         rx_data   : in  STD_LOGIC_VECTOR(7 downto 0);
         rx_error  : in  STD_LOGIC;
-        linestate : in  STD_LOGIC_VECTOR(1 downto 0);
+        -- The speed negotiator decides what a reset is and says so here.  It
+        -- cannot be inferred from the line state alone: high-speed idle is
+        -- SE0, so a device that treated SE0 as a reset would reset itself
+        -- eight times a millisecond as soon as it reached high speed.
+        bus_reset : in  STD_LOGIC;
 
         tx_req    : out STD_LOGIC;
         tx_pid    : out STD_LOGIC_VECTOR(3 downto 0);
@@ -82,8 +86,8 @@ entity usb_sie is
         stat_setup : out unsigned(7 downto 0);
         stat_tx    : out unsigned(7 downto 0);
 
-        -- Rate to report to the host, 10.14 samples per frame.
-        fb_value : in unsigned(23 downto 0)
+        -- Rate to report to the host, 16.16 samples per microframe.
+        fb_value : in unsigned(31 downto 0)
     );
 end usb_sie;
 
@@ -154,7 +158,6 @@ architecture Behavioral of usb_sie is
     signal addr_pending : STD_LOGIC := '0';
     signal cfg_val  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     signal alt_set  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
-    signal se0_cnt  : unsigned(15 downto 0) := (others => '0');
 
     ------------------------------------------------------------------
     -- Endpoint 0
@@ -172,8 +175,8 @@ architecture Behavioral of usb_sie is
     signal chunk_len : unsigned(6 downto 0) := (others => '0');
     signal need_ack : STD_LOGIC := '0';
     -- Short replies that come from registers rather than the descriptor ROM:
-    -- two bytes for GET_STATUS, three for the isochronous feedback rate.
-    signal imm : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
+    -- two bytes for GET_STATUS, four for the isochronous feedback rate.
+    signal imm : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
 
     -- Prefetch buffer, four bytes, filled ahead of the transmitter.
     type pf_t is array (0 to 3) of STD_LOGIC_VECTOR(7 downto 0);
@@ -185,7 +188,7 @@ architecture Behavioral of usb_sie is
     signal rom_out  : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     signal fetch_addr : unsigned(DESC_ADDR_BITS-1 downto 0) := (others => '0');
     signal fetch_rem  : unsigned(6 downto 0) := (others => '0');
-    signal fetch_imm  : STD_LOGIC_VECTOR(23 downto 0) := (others => '0');
+    signal fetch_imm  : STD_LOGIC_VECTOR(31 downto 0) := (others => '0');
 
     -- The two bytes still sitting in the delay line at the end of a data
     -- packet are its CRC16.  Named rather than concatenated inline so the
@@ -290,6 +293,7 @@ begin
         variable v_addr : unsigned(DESC_ADDR_BITS-1 downto 0);
         variable v_rem  : unsigned(15 downto 0);
         variable v_len  : unsigned(6 downto 0);
+        variable occupancy : integer;
         variable len    : unsigned(15 downto 0);
         variable want   : unsigned(15 downto 0);
         variable ok     : boolean;
@@ -306,24 +310,17 @@ begin
             setup_ready <= '0';
 
             --------------------------------------------------------
-            -- Bus reset: SE0 held far longer than any packet gap.
+            -- Bus reset
             --------------------------------------------------------
-            if linestate = "00" then
-                if se0_cnt = 6000 then          -- 100 us at 60 MHz
-                    usb_reset  <= '1';
-                    dev_addr   <= (others => '0');
-                    cfg_val    <= (others => '0');
-                    alt_set    <= (others => '0');
-                    addr_pending <= '0';
-                    ctl        <= C_IDLE;
-                    txs        <= X_IDLE;
-                    tx_req_i   <= '0';
-                end if;
-                if se0_cnt <= 6000 then
-                    se0_cnt <= se0_cnt + 1;
-                end if;
-            else
-                se0_cnt <= (others => '0');
+            if bus_reset = '1' then
+                usb_reset    <= '1';
+                dev_addr     <= (others => '0');
+                cfg_val      <= (others => '0');
+                alt_set      <= (others => '0');
+                addr_pending <= '0';
+                ctl          <= C_IDLE;
+                txs          <= X_IDLE;
+                tx_req_i     <= '0';
             end if;
 
             --------------------------------------------------------
@@ -484,7 +481,7 @@ begin
                             pf_pend    <= '0';
                             in_rom     <= '0';
                             fetch_imm  <= std_logic_vector(fb_value);
-                            fetch_rem  <= to_unsigned(3, 7);
+                            fetch_rem  <= to_unsigned(4, 7);
                             tx_pid_i   <= PID_DATA0;
                             tx_crc_i   <= '1';
                             txs        <= X_START;
@@ -576,6 +573,15 @@ begin
                                     in_addr <= to_unsigned(CONFIG_OFF, DESC_ADDR_BITS);
                                     len     := to_unsigned(CONFIG_LEN, 16);
                                     ok      := true;
+                                -- A high-speed device is asked what it would
+                                -- look like at the other speed.  Answering the
+                                -- qualifier and stalling the other-speed
+                                -- configuration is how a device says "high
+                                -- speed or nothing".
+                                when x"06" =>
+                                    in_addr <= to_unsigned(QUALIFIER_OFF, DESC_ADDR_BITS);
+                                    len     := to_unsigned(QUALIFIER_LEN, 16);
+                                    ok      := true;
                                 when x"03" =>
                                     case wValueL is
                                         when x"00" =>
@@ -607,17 +613,17 @@ begin
                             ok := true;
 
                         when x"08" =>                      -- GET_CONFIGURATION
-                            imm <= x"0000" & cfg_val;
+                            imm <= x"000000" & cfg_val;
                             len := to_unsigned(1, 16);
                             ok  := true;
 
                         when x"00" =>                      -- GET_STATUS
-                            imm <= x"000000";
+                            imm <= x"00000000";
                             len := to_unsigned(2, 16);
                             ok  := true;
 
                         when x"0A" =>                      -- GET_INTERFACE
-                            imm <= x"0000" & alt_set;
+                            imm <= x"000000" & alt_set;
                             len := to_unsigned(1, 16);
                             ok  := true;
 
@@ -691,11 +697,24 @@ begin
                 wptr <= wptr + 1;
             end if;
 
-            if fetch_rem > 0
-               and (pf_level + ("00" & pf_pend)) < 4 then
+            -- Room has to be judged against what the buffer will hold after
+            -- this clock edge, counting the byte arriving from the memory and
+            -- the byte the transmitter is taking.  Ignoring the departing byte
+            -- lets a fetch be issued only every other clock, which is fine at
+            -- full speed and empties the buffer mid-packet at high speed,
+            -- where the PHY takes one byte every clock.
+            occupancy := to_integer(pf_level);
+            if pf_pend = '1' then
+                occupancy := occupancy + 1;
+            end if;
+            if tx_ack = '1' then
+                occupancy := occupancy - 1;
+            end if;
+
+            if fetch_rem > 0 and occupancy < 4 then
                 fetch_addr <= fetch_addr + 1;
                 fetch_rem  <= fetch_rem - 1;
-                fetch_imm  <= x"00" & fetch_imm(23 downto 8);
+                fetch_imm  <= x"00" & fetch_imm(31 downto 8);
                 pf_pend    <= '1';
             end if;
 

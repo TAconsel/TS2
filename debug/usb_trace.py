@@ -3,7 +3,7 @@
 
     debug/usb_trace.py [--port /dev/ttyUSB0] [--count N] [--follow]
 
-The FPGA emits a fixed 47-byte frame every ~240 ms; see usb_top.vhd for the
+The FPGA emits a fixed 49-byte frame every ~240 ms; see usb_top.vhd for the
 layout.  Frames are found by their 0x55 0xAA magic, so starting mid-frame just
 costs one frame of resync.
 """
@@ -14,7 +14,7 @@ import time
 import serial
 
 MAGIC = b"\x55\xaa"
-FRAME = 47
+FRAME = 49
 CAP_MAGIC = b"\x55\xbb"
 CAP_SAMPLES = 1024
 CAP_BYTES = 2 + CAP_SAMPLES * 4
@@ -56,6 +56,8 @@ def decode(f):
         "playing": (uflags >> 3) & 1,
         "linestate": LINESTATE[(uflags >> 4) & 3],
         "reset_seen": (uflags >> 6) & 1,
+        "high_speed": (uflags >> 7) & 1,
+        "chirps": f[48],
         "dev_addr": f[14] & 0x7F,
         "frame_no": u16(15) & 0x7FF,
         # Counters are reset once per status frame, so the window is the
@@ -65,7 +67,7 @@ def decode(f):
         "drops": f[21],
         "setups": f[22],
         "txs": f[23],
-        "fb": u24(24),
+        "fb": u24(24) | (f[47] << 24),
         "beat": f[27],
         "pin_level": f[28] | (f[29] << 8),
         "pin_tog": f[30] | (f[31] << 8),
@@ -157,6 +159,7 @@ def show(d, verbose):
 
     usb = []
     usb.append("PHY set up" if d["phy_ready"] else "PHY not set up")
+    usb.append("HIGH SPEED" if d["high_speed"] else "full speed")
     usb.append(f"line {d['linestate']}")
     if d["reset_seen"]:
         usb.append("bus reset seen")
@@ -179,8 +182,9 @@ def show(d, verbose):
         f"    setups accepted {d['setups']}  packets sent {d['txs']}"
     )
     # The feedback rate is 10.14 samples per USB frame; 48.000 is 0x0C0000.
-    print(f"    feedback rate {d['fb'] / 16384:.4f} samples/frame "
-          f"({d['fb'] * 1000 / 16384:.1f} Hz)")
+    # 16.16 samples per microframe; eight microframes to the millisecond.
+    print(f"    feedback rate {d['fb'] / 65536:.4f} samples/microframe "
+          f"({d['fb'] * 8000 / 65536:.1f} Hz)")
 
 
 def show_capture(blk):

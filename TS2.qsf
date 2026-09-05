@@ -85,7 +85,6 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to i2s_sck
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_lrck
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_din
 set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_bck
-set_instance_assignment -name WEAK_PULL_UP_RESISTOR ON -to i2s_sck
 
 # USB3300 ULPI PHY.  The PHY drives CLK, so it is an input here.
 #

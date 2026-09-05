@@ -6,9 +6,15 @@ use IEEE.NUMERIC_STD.ALL;
 -- a 1 kHz sine test tone whenever nothing is playing, plus the original
 -- blinking LED kept as an "FPGA is configured" indicator.
 --
--- The audio path runs from audio_pll at 256 x Fs, putting Fs within 11 ppm of
--- 48 kHz.  The LED stays on the raw 50 MHz reference so it keeps indicating
--- life even if the PLL fails to lock.  The two domains never exchange data.
+-- The stream is 384 kHz, 32-bit, stereo, which needs USB high speed: at
+-- 3.07 MB/s it does not fit a full-speed frame.  The device attaches at full
+-- speed and negotiates up when the host resets the bus.
+--
+-- The audio path runs from audio_pll at 128 x Fs, putting Fs within 87 ppm of
+-- 384 kHz -- which does not matter, because the device reports the rate it
+-- actually runs at on its feedback endpoint and the host follows it.  The LED
+-- stays on the raw 50 MHz reference so it keeps indicating life even if the
+-- PLL fails to lock.
 --
 -- Board is the 10CL006YE144C8G core board (DEV190806037), 50 MHz TCXO on
 -- FPGA_CLK / PIN_91.
@@ -18,7 +24,7 @@ use IEEE.NUMERIC_STD.ALL;
 --     LCK  (LRCK)      3
 --     DIN              1
 --     BCK              143
---     SCK  (MCLK)      141
+--     SCK  (MCLK)      141   held low: the DAC uses its own PLL
 --
 -- A USB3300 ULPI PHY hangs off the other side, to turn the board into a USB
 -- audio device.  Its CLK is an output: the PHY free-runs at 60 MHz from its
@@ -46,10 +52,8 @@ entity ts2_top is
     Port (
         clk      : in  STD_LOGIC;   -- 50 MHz
         led      : out STD_LOGIC;
-        -- SCK is bidirectional only so the debug monitor can stop driving it;
-        -- with DEBUG = false the enable is constant and it becomes a plain
-        -- output.
-        i2s_sck  : inout STD_LOGIC;
+        -- SCK is held low: see the note by the assignment below.
+        i2s_sck  : out   STD_LOGIC;
         i2s_bck  : out   STD_LOGIC;
         i2s_lrck : out   STD_LOGIC;
         i2s_din  : out   STD_LOGIC;
@@ -69,17 +73,15 @@ end ts2_top;
 
 architecture Behavioral of ts2_top is
 
-    signal tone_sample : signed(23 downto 0);
-    signal usb_l, usb_r : signed(23 downto 0);
+    signal tone_sample : signed(31 downto 0);
+    signal usb_l, usb_r : signed(31 downto 0);
     signal usb_active   : STD_LOGIC;
-    signal play_l, play_r : signed(23 downto 0);
+    signal play_l, play_r : signed(31 downto 0);
     signal frame_tick   : STD_LOGIC;
 
     -- Internal copies of the bus, so the debug monitor can observe what the
     -- pins are driven with (an out port cannot be read in VHDL-93).
-    signal sck_i, bck_i, lrck_i, din_i : STD_LOGIC;
-
-    signal sck_off : STD_LOGIC := '0';
+    signal bck_i, lrck_i, din_i : STD_LOGIC;
 
     signal aclk, pll_locked : STD_LOGIC;
 
@@ -119,14 +121,16 @@ begin
             sample_l   => play_l,
             sample_r   => play_r,
             frame_tick => frame_tick,
-            i2s_sck    => sck_i,
             i2s_bck    => bck_i,
             i2s_lrck   => lrck_i,
             i2s_din    => din_i
         );
 
-    -- Released SCK is what a module using its own internal PLL expects.
-    i2s_sck  <= 'Z' when sck_off = '1' else sck_i;
+    -- SCK is held low, which puts the DAC in BCK-only mode and lets its own
+    -- PLL derive the system clock.  At 384 kHz the alternative, 256 x Fs, is
+    -- 98.3 MHz: past what this part will generate cleanly and well past what
+    -- a jumper wire will carry.
+    i2s_sck  <= '0';
     i2s_bck  <= bck_i;
     i2s_lrck <= lrck_i;
     -- Hold data at zero until the PLL is locked, so the DAC is not fed
@@ -159,8 +163,7 @@ begin
                 i2s_lrck   => lrck_i,
                 i2s_din    => din_i,
                 sample_ref => play_l,
-                pll_locked => pll_locked,
-                sck_off    => sck_off
+                pll_locked => pll_locked
             );
     end generate;
 

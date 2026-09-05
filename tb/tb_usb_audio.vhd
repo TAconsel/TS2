@@ -6,9 +6,10 @@ use STD.TEXTIO.all;
 -- Testbench for usb_audio: the byte stream from the SIE in one clock domain,
 -- I2S samples out in another, and the feedback loop in between.
 --
--- Both clocks are the real ones -- 60 MHz for ULPI and 12.288 MHz for the
+-- Both clocks are the real ones -- 60 MHz for ULPI and 49.147727 MHz for the
 -- audio side -- so the crossing is exercised at its actual ratio rather than
--- at some convenient integer one.  Sample values are made distinguishable per
+-- at some convenient integer one.  Bytes arrive one per clock, which is what
+-- high speed actually delivers and the hardest case for the packer.  Sample values are made distinguishable per
 -- channel so a swapped or shifted pair is visible rather than merely wrong by
 -- a little.
 
@@ -18,9 +19,9 @@ end tb_usb_audio;
 architecture sim of tb_usb_audio is
 
     constant USB_PERIOD : time := 16.667 ns;    -- 60 MHz
-    constant A_PERIOD   : time := 81.380 ns;    -- 12.288 MHz
-    -- The I2S master ticks once per 256 audio clocks.
-    constant FRAME_DIV  : natural := 256;
+    constant A_PERIOD   : time := 20.347 ns;    -- 49.147727 MHz
+    -- The I2S master ticks once per 128 audio clocks.
+    constant FRAME_DIV  : natural := 128;
 
     signal usb_clk : STD_LOGIC := '0';
     signal aclk    : STD_LOGIC := '0';
@@ -35,12 +36,12 @@ architecture sim of tb_usb_audio is
     signal audio_done  : STD_LOGIC := '0';
     signal audio_drop  : STD_LOGIC := '0';
 
-    signal fb_value   : unsigned(23 downto 0);
+    signal fb_value   : unsigned(31 downto 0);
     signal stat_over  : unsigned(7 downto 0);
     signal stat_under : unsigned(7 downto 0);
 
     signal frame_tick : STD_LOGIC := '0';
-    signal sample_l, sample_r : signed(23 downto 0);
+    signal sample_l, sample_r : signed(31 downto 0);
     signal active, owns_dac : STD_LOGIC;
 
     signal got    : natural := 0;
@@ -57,7 +58,7 @@ begin
     aclk    <= (not aclk)    after A_PERIOD / 2   when running else '0';
 
     dut : entity work.usb_audio
-        generic map (FIFO_BITS => 9)
+        generic map (FIFO_BITS => 10)
         port map (
             usb_clk     => usb_clk,
             rst         => rst,
@@ -107,8 +108,8 @@ begin
                 bad   <= 0;
                 first <= '1';
             elsif frame_tick = '1' and active = '1' then
-                l := to_integer(shift_right(sample_l, 8)) mod 65536;
-                r := to_integer(shift_right(sample_r, 8)) mod 65536;
+                l := to_integer(sample_l) mod 65536;
+                r := to_integer(sample_r) mod 65536;
                 if r /= (l + 1) mod 65536 then
                     bad <= bad + 1;             -- channels out of step
                 elsif first = '0'
@@ -153,27 +154,30 @@ begin
             end loop;
         end procedure;
 
+        -- High speed delivers a byte every ULPI clock, with no gap.
         procedure send_byte(b : integer) is
         begin
             audio_data  <= std_logic_vector(to_unsigned(b mod 256, 8));
             audio_valid <= '1';
             utick;
             audio_valid <= '0';
-            -- Full speed puts 40 ULPI clocks between bytes.
-            utick(39);
         end procedure;
 
-        -- One frame's worth: n stereo samples, little endian, left first.
+        -- One microframe's worth: n stereo samples, four bytes each, little
+        -- endian, left channel first.
+        procedure send_sample(v : integer) is
+        begin
+            send_byte(v mod 256);
+            send_byte((v / 256) mod 256);
+            send_byte((v / 65536) mod 256);
+            send_byte((v / 16777216) mod 256);
+        end procedure;
+
         procedure send_packet(first : natural; n : natural; good : boolean) is
-            variable v : integer;
         begin
             for k in 0 to n - 1 loop
-                v := (2 * (first + k)) mod 65536;
-                send_byte(v mod 256);
-                send_byte(v / 256);
-                v := (2 * (first + k) + 1) mod 65536;
-                send_byte(v mod 256);
-                send_byte(v / 256);
+                send_sample((2 * (first + k)) mod 65536);
+                send_sample((2 * (first + k) + 1) mod 65536);
             end loop;
             if good then
                 audio_done <= '1';
@@ -197,10 +201,10 @@ begin
 
         -- Prime the buffer, then keep feeding it one packet per frame while
         -- the audio side drains it, which is what the host does.
-        -- Enough packets to get past the priming level: playback does not
-        -- start until the buffer has reached its target.
-        note("--- streaming 48-sample packets ---");
-        for p in 0 to 6 loop
+        -- Enough packets to get past the priming level -- the buffer must
+        -- reach half of its 1024 entries before playback starts.
+        note("--- streaming 48-sample microframes ---");
+        for p in 0 to 13 loop
             send_packet(sent, 48, true);
             sent := sent + 48;
         end loop;
@@ -209,9 +213,9 @@ begin
         check(bad = 0, "every sample in order and in the right channel, "
               & integer'image(bad) & " bad of " & integer'image(got));
 
-        -- Let the audio side catch up: seven packets is about 7 ms of audio,
-        -- so it takes rather longer than that to run the buffer dry.
-        wait for 9 ms;
+        -- Let the audio side catch up: fourteen microframes is 672 samples,
+        -- about 1.75 ms at 384 kHz, so it takes a little longer to run dry.
+        wait for 2500 us;
         check(bad = 0, "still matching after the buffer drained, "
               & integer'image(got) & " samples checked");
         check(stat_over = 0, "no FIFO overflow");
@@ -221,29 +225,29 @@ begin
         note("--- feedback follows the buffer level ---");
         -- A buffer below the half-full target means the device is consuming
         -- faster than the host is filling, so it must ask for more.
-        check(fb_value > to_unsigned(48 * 16384, 24),
-              "a draining buffer asks for more than 48 samples a frame, got "
-              & integer'image(to_integer(fb_value)));
-        check(fb_value <= to_unsigned(49 * 16384, 24),
+        check(fb_value > to_unsigned(48 * 65536, 32),
+              "a draining buffer asks for more than 48 samples a microframe, "
+              & "got " & integer'image(to_integer(fb_value)));
+        check(fb_value <= to_unsigned(49 * 65536, 32),
               "and stays inside the clamp");
 
         -- Push well past the half-full mark and it must ask for fewer.
-        for p in 0 to 8 loop
+        for p in 0 to 15 loop
             send_packet(sent, 48, true);
             sent := sent + 48;
         end loop;
         utick(50);
-        check(fb_value < to_unsigned(48 * 16384, 24),
-              "a filling buffer asks for less than 48 samples a frame, got "
-              & integer'image(to_integer(fb_value)));
-        check(fb_value >= to_unsigned(47 * 16384, 24),
+        check(fb_value < to_unsigned(48 * 65536, 32),
+              "a filling buffer asks for less than 48 samples a microframe, "
+              & "got " & integer'image(to_integer(fb_value)));
+        check(fb_value >= to_unsigned(47 * 65536, 32),
               "and stays inside the clamp");
 
         ----------------------------------------------------------------
         note("--- a dropped packet does not shift the channels ---");
-        wait for 6 ms;
-        -- Three bytes then a drop: half a sample, which would swap left and
-        -- right from here on if the phase were not reset at the boundary.
+        wait for 3 ms;
+        -- Three bytes then a drop: part of a sample, which would shift left
+        -- and right from here on if the phase were not reset at the boundary.
         send_byte(16#11#);
         send_byte(16#22#);
         send_byte(16#33#);
@@ -258,11 +262,11 @@ begin
         utick(10);
         -- The sample sequence carries on rather than restarting, so the
         -- continuity check stays meaningful across the gap.
-        for p in 0 to 2 loop
+        for p in 0 to 13 loop
             send_packet(sent, 48, true);
             sent := sent + 48;
         end loop;
-        wait for 4 ms;
+        wait for 2500 us;
         check(bad = 0, "channels still aligned after the truncated packet, "
               & integer'image(bad) & " bad of " & integer'image(got));
 

@@ -1,32 +1,33 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 
-library altera_mf;
-use altera_mf.altera_mf_components.all;
-
--- 50 MHz -> 12.288136 MHz audio master clock.
+-- 50 MHz -> 49.147727 MHz, the audio clock for 384 kHz.
 --
--- 12.288 MHz exactly (256 x 48 kHz) is NOT reachable from a 50 MHz reference
--- on this PLL.  The required ratio is 3072/3125, and 3125 = 5^5 shares no
--- factor with 3072, so realising it needs M > 512 for any VCO frequency in
--- the legal 600-1300 MHz window.  The closest legal setting is
+-- The I2S transmitter runs at twice the bit clock, and a 384 kHz frame of two
+-- 32-bit slots needs BCK = 64 x Fs = 24.576 MHz, so the wanted clock is
+-- 49.152 MHz.  That is not reachable from a 50 MHz reference: the ratio is
+-- 3072/3125 and 3125 = 5^5 shares no factor with 3072, so no legal M/N/C
+-- lands on it.  The closest is
 --
---     M = 29, N = 2, C = 59
---     fPFD = 50 / 2      =  25.000000 MHz   (spec 5 - 325)
---     fVCO = 50 * 29 / 2 = 725.000000 MHz   (spec 600 - 1300)
---     fOUT = 725 / 59    =  12.288136 MHz
+--     M = 173, N = 8, C = 22
+--     fPFD = 50 / 8        =   6.250000 MHz   (spec 5 - 325)
+--     fVCO = 50 * 173 / 8  = 1081.250000 MHz  (spec 600 - 1300)
+--     fOUT = 1081.25 / 22  =   49.147727 MHz
 --
--- which puts Fs at 48000.5297 Hz, i.e. +11 ppm -- tighter than a typical
--- crystal, against +17253 ppm for the PLL-less 50/1024 divide.
+-- which puts Fs at 383966.6 Hz, 87 ppm below 384 kHz.  That does not matter
+-- and is not a compromise: the device is an asynchronous USB audio sink and
+-- reports the rate it actually runs at on its feedback endpoint, so the host
+-- follows this clock rather than the other way round.  Pitch error of 87 ppm
+-- is 0.15 cents.
 --
--- Quartus derives M/N/C from the multiply/divide ratio below; 29/118 factors
--- as M = 29 over N*C = 2*59.  Check the PLL Summary in the fit report if the
+-- Quartus derives M/N/C from the multiply/divide ratio below; 173/176 factors
+-- as M = 173 over N*C = 8*22.  Check the PLL Summary in the fit report if the
 -- reference clock ever changes.
 
 entity audio_pll is
     Port (
         clk_in  : in  STD_LOGIC;   -- 50 MHz reference
-        clk_out : out STD_LOGIC;   -- 12.288136 MHz, = 256 x Fs
+        clk_out : out STD_LOGIC;   -- 49.147727 MHz, = 128 x Fs
         locked  : out STD_LOGIC
     );
 end audio_pll;

@@ -17,6 +17,14 @@ use IEEE.NUMERIC_STD.ALL;
 --   * With DIR high: NXT high = USB receive data, NXT low = an RX CMD status
 --     byte.  The exception is the data phase of a register read, which also
 --     arrives with NXT low, so RX CMD decoding is suppressed there.
+--   * A received packet is framed by DIR, not by the RX CMD's RxActive bit.
+--     At high speed this part delivers a packet's bytes as soon as it takes
+--     the bus and only reports RxActive afterwards -- sometimes after the
+--     whole packet -- so framing on that status drops most of the traffic.
+--     DIR is unambiguous: the PHY holds it for the packet and drops it after.
+--     RxActive going false is still honoured as an end of packet once bytes
+--     have arrived, which is what separates two packets inside one DIR
+--     window.
 --   * With DIR low the link drives a command byte and holds it until the PHY
 --     raises NXT.  0x00 is the idle command.  Register write = 0x80 | addr,
 --     register read = 0xC0 | addr, USB transmit = 0x40 | PID.
@@ -118,6 +126,10 @@ architecture Behavioral of ulpi is
     -- The NXT pin itself, for flow control only.  See the note above.
     signal nxt_now : STD_LOGIC;
 
+    -- Receive framing, from DIR rather than the RX CMD status.
+    signal rx_run   : STD_LOGIC := '0';
+    signal got_byte : STD_LOGIC := '0';
+
     signal data_out : STD_LOGIC_VECTOR(7 downto 0) := (others => '0');
     signal stp_out  : STD_LOGIC := '0';
 
@@ -160,7 +172,8 @@ architecture Behavioral of ulpi is
 
 begin
 
-    nxt_now  <= ulpi_nxt;
+    nxt_now   <= ulpi_nxt;
+    rx_active <= rx_run;
 
     -- High on the cycle a payload byte is actually taken.
     tx_ack   <= '1' when (state = S_TX_CMD or state = S_TX_DATA)
@@ -195,27 +208,40 @@ begin
             -- than the turnaround cycle and the data phase of a register
             -- read (which the FSM below claims for itself).
             --------------------------------------------------------------
+            -- The turnaround cycle opens the receive window: the PHY has
+            -- taken the bus, and what follows is one packet.
+            if dir_q = '1' and dir_q2 = '0' then
+                rx_run   <= '1';
+                got_byte <= '0';
+            end if;
+
             if dir_q = '1' and dir_q2 = '1' and state /= S_RR_DATA then
                 if nxt_q = '1' then
                     rx_data  <= data_q;
                     rx_valid <= '1';
+                    got_byte <= '1';
                 else
                     -- RX CMD: [1:0] line state, [3:2] VBUS, [5:4] RX event.
                     linestate <= data_q(1 downto 0);
                     vbus      <= data_q(3 downto 2);
-                    case data_q(5 downto 4) is
-                        when "01"   => rx_active <= '1';
-                        when "11"   => rx_active <= '1';
-                                       rx_error  <= '1';
-                        when others => rx_active <= '0';
-                    end case;
+                    if data_q(5 downto 4) = "11" then
+                        rx_error <= '1';
+                    end if;
+                    -- Receiver idle closes the packet, but only once bytes
+                    -- have arrived: this part often reports RxActive after
+                    -- the data rather than before it.
+                    if data_q(5 downto 4) = "00" and got_byte = '1' then
+                        rx_run   <= '0';
+                        got_byte <= '0';
+                    end if;
                 end if;
             end if;
 
             -- The PHY dropping DIR ends any packet in progress, whether or
             -- not a closing RX CMD arrived.
             if dir_q = '0' then
-                rx_active <= '0';
+                rx_run   <= '0';
+                got_byte <= '0';
             end if;
 
             --------------------------------------------------------------
@@ -380,10 +406,11 @@ begin
             end if;
 
             if rst = '1' then
-                state     <= S_IDLE;
-                data_out  <= x"00";
-                stp_out   <= '0';
-                rx_active <= '0';
+                state    <= S_IDLE;
+                data_out <= x"00";
+                stp_out  <= '0';
+                rx_run   <= '0';
+                got_byte <= '0';
             end if;
 
         end if;
